@@ -3,5 +3,6 @@
 *.pyc
 *.jpg
 *.png
+*.img
 
 config.json

@@ -18,10 +18,21 @@ PROFILE_DEFAULTS = {
     "dilate": 1,
     "cluster_k": 4,
     "cluster_min_texture": 0.08,
+    # Cluster method: brightness preference for the winning blob (0..1). 0.5 is
+    # neutral; below 0.5 biases toward darker blobs, above 0.5 toward brighter
+    # ones (food is often the darkest thing in the bowl).
+    "cluster_brightness_target": 0.5,
+    # Cluster method: hard gate that only accepts blobs resting on the bottom
+    # edge of the ROI and clear of the top edge. Disabled by default.
+    "cluster_anchor_bottom": False,
     # Brightness method: minimum spread (0..255) between the bowl's darkest and
     # brightest zones for it to count as containing food. Below this the bowl
     # is treated as empty (a clean bowl is almost uniformly bright).
     "brightness_min_contrast": 40,
+    # Brightness method: drop dark blobs whose edge transition is smoother than
+    # this (a lighting gradient fades gradually; real food has a crisp edge).
+    # Smoothness = contrast / mean boundary gradient. 0 disables the gate.
+    "brightness_max_smoothness": 0.0,
     # Close black gaps between food chunks up to this many pixels wide (a
     # morphological closing). 0 disables it.
     "fill_holes": 0,
@@ -56,7 +67,10 @@ def _migrate(raw):
             "dilate",
             "cluster_k",
             "cluster_min_texture",
+            "cluster_brightness_target",
+            "cluster_anchor_bottom",
             "brightness_min_contrast",
+            "brightness_max_smoothness",
             "fill_holes",
             "minimum_coverage",
             "full_coverage",

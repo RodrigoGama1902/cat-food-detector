@@ -154,10 +154,25 @@
       <input type="range" id="clustertex" min="0" max="0.5" step="0.01" value="0.08" />
       <span class="val" id="clustertexVal">0.08</span>
     </div>
+    <div class="slider-row" id="clusterBrightRow">
+      <label style="margin:0;width:140px;">Brightness target</label>
+      <input type="range" id="clusterbright" min="0" max="1" step="0.05" value="0.5" />
+      <span class="val" id="clusterbrightVal">0.5</span>
+    </div>
+    <div class="slider-row" id="clusterAnchorRow">
+      <label style="margin:0;width:140px;">Anchor to bottom</label>
+      <input type="checkbox" id="clusteranchor" style="width:18px;height:18px;" />
+      <span class="hint" style="flex:1;">Only keep blobs that rest on the bottom edge and don't touch the top.</span>
+    </div>
     <div class="slider-row" id="brightContrastRow">
       <label style="margin:0;width:140px;">Min. contrast</label>
       <input type="range" id="brightcontrast" min="0" max="128" value="40" />
       <span class="val" id="brightcontrastVal">40</span>
+    </div>
+    <div class="slider-row" id="brightSmoothRow">
+      <label style="margin:0;width:140px;">Max. smoothness</label>
+      <input type="range" id="brightsmooth" min="0" max="3" step="0.05" value="0" />
+      <span class="val" id="brightsmoothVal">0</span>
     </div>
     <div class="slider-row" id="fillHolesRow">
       <label style="margin:0;width:140px;">Fill gaps (px)</label>
@@ -284,9 +299,16 @@
       const tex = p.cluster_min_texture != null ? p.cluster_min_texture : 0.08;
       $("clustertex").value = tex;
       $("clustertexVal").textContent = tex;
+      const bright = p.cluster_brightness_target != null ? p.cluster_brightness_target : 0.5;
+      $("clusterbright").value = bright;
+      $("clusterbrightVal").textContent = bright;
+      $("clusteranchor").checked = !!p.cluster_anchor_bottom;
       const contrast = p.brightness_min_contrast != null ? p.brightness_min_contrast : 40;
       $("brightcontrast").value = contrast;
       $("brightcontrastVal").textContent = contrast;
+      const smooth = p.brightness_max_smoothness != null ? p.brightness_max_smoothness : 0;
+      $("brightsmooth").value = smooth;
+      $("brightsmoothVal").textContent = smooth;
       const holes = p.fill_holes != null ? p.fill_holes : 0;
       $("fillholes").value = holes;
       $("fillholesVal").textContent = holes;
@@ -340,7 +362,10 @@
       $("thrRow").style.display = isCluster ? "none" : "flex";
       $("clusterRow").style.display = isCluster ? "flex" : "none";
       $("clusterTexRow").style.display = isCluster ? "flex" : "none";
+      $("clusterBrightRow").style.display = isCluster ? "flex" : "none";
+      $("clusterAnchorRow").style.display = isCluster ? "flex" : "none";
       $("brightContrastRow").style.display = isBrightness ? "flex" : "none";
+      $("brightSmoothRow").style.display = isBrightness ? "flex" : "none";
       // Dilate fills both textured and clustered blobs.
       $("dilateRow").style.display = (isTexture || isCluster) ? "flex" : "none";
     }
@@ -473,7 +498,10 @@
     $("dilate").addEventListener("input", () => { $("dilateVal").textContent = $("dilate").value; refreshPreview(); });
     $("clusterk").addEventListener("input", () => { $("clusterkVal").textContent = $("clusterk").value; refreshPreview(); });
     $("clustertex").addEventListener("input", () => { $("clustertexVal").textContent = $("clustertex").value; refreshPreview(); });
+    $("clusterbright").addEventListener("input", () => { $("clusterbrightVal").textContent = $("clusterbright").value; refreshPreview(); });
+    $("clusteranchor").addEventListener("change", () => { refreshPreview(); });
     $("brightcontrast").addEventListener("input", () => { $("brightcontrastVal").textContent = $("brightcontrast").value; refreshPreview(); });
+    $("brightsmooth").addEventListener("input", () => { $("brightsmoothVal").textContent = $("brightsmooth").value; refreshPreview(); });
     $("fillholes").addEventListener("input", () => { $("fillholesVal").textContent = $("fillholes").value; refreshPreview(); });
     $("method").addEventListener("change", () => { applyMethodUI(); refreshPreview(); });
 
@@ -489,10 +517,12 @@
       const f = $("fullcov").value;
       const k = $("clusterk").value;
       const tex = $("clustertex").value;
+      const bright = $("clusterbright").value;
+      const anchor = $("clusteranchor").checked;
       const contrast = $("brightcontrast").value;
       const profile = $("profile").value;
       const res = await fetch(
-        `/api/calibrate/preview?profile=${profile}&threshold=${t}&minimum_coverage=${m}&full_coverage=${f}&method=${method}&dilate=${d}&cluster_k=${k}&cluster_min_texture=${tex}&brightness_min_contrast=${contrast}&fill_holes=${$("fillholes").value}`
+        `/api/calibrate/preview?profile=${profile}&threshold=${t}&minimum_coverage=${m}&full_coverage=${f}&method=${method}&dilate=${d}&cluster_k=${k}&cluster_min_texture=${tex}&cluster_brightness_target=${bright}&cluster_anchor_bottom=${anchor}&brightness_min_contrast=${contrast}&fill_holes=${$("fillholes").value}&brightness_max_smoothness=${$("brightsmooth").value}`
       );
       const data = await res.json();
       renderCards(data.results);
@@ -534,8 +564,11 @@
           dilate: parseInt($("dilate").value, 10),
           cluster_k: parseInt($("clusterk").value, 10),
           cluster_min_texture: parseFloat($("clustertex").value),
+          cluster_brightness_target: parseFloat($("clusterbright").value),
+          cluster_anchor_bottom: $("clusteranchor").checked,
           brightness_min_contrast: parseInt($("brightcontrast").value, 10),
           fill_holes: parseInt($("fillholes").value, 10),
+          brightness_max_smoothness: parseFloat($("brightsmooth").value),
         }),
       });
       const data = await res.json();

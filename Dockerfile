@@ -16,6 +16,9 @@ COPY templates ./templates
 
 # Persist calibration to a mounted volume.
 ENV CONFIG_PATH=/data/config.json
+# Persist uploaded calibration images (empty/medium/full) to the same volume so
+# they survive container restarts and rebuilds.
+ENV CALIB_DIR=/data/calib
 
 EXPOSE 8000
 

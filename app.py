@@ -58,6 +58,15 @@ def _is_night(value, default=False):
     return str(value).strip().lower() in _TRUE
 
 
+def _as_bool(value, default=False):
+    """Parse a boolean query/JSON value, falling back to ``default`` if unset."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in _TRUE
+
+
 def detect_night_image(image):
     """Return True if the frame looks like night mode (near-grayscale / IR)."""
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
@@ -151,6 +160,15 @@ def detect():
                 profile.get("cluster_min_texture", 0.08),
                 type=float,
             ),
+            cluster_brightness_target=args.get(
+                "cluster_brightness_target",
+                profile.get("cluster_brightness_target", 0.5),
+                type=float,
+            ),
+            cluster_anchor_bottom=_as_bool(
+                args.get("cluster_anchor_bottom"),
+                profile.get("cluster_anchor_bottom", False),
+            ),
             brightness_min_contrast=args.get(
                 "brightness_min_contrast",
                 profile.get("brightness_min_contrast", 40),
@@ -158,6 +176,11 @@ def detect():
             ),
             fill_holes_area=args.get(
                 "fill_holes", profile.get("fill_holes", 0), type=int
+            ),
+            brightness_max_smoothness=args.get(
+                "brightness_max_smoothness",
+                profile.get("brightness_max_smoothness", 0.0),
+                type=float,
             ),
         )
     except ValueError as error:
@@ -220,10 +243,20 @@ def update_config():
                 profile["cluster_k"] = int(raw["cluster_k"])
             if "cluster_min_texture" in raw:
                 profile["cluster_min_texture"] = float(raw["cluster_min_texture"])
+            if "cluster_brightness_target" in raw:
+                profile["cluster_brightness_target"] = float(
+                    raw["cluster_brightness_target"]
+                )
+            if "cluster_anchor_bottom" in raw:
+                profile["cluster_anchor_bottom"] = bool(raw["cluster_anchor_bottom"])
             if "brightness_min_contrast" in raw:
                 profile["brightness_min_contrast"] = int(raw["brightness_min_contrast"])
             if "fill_holes" in raw:
                 profile["fill_holes"] = int(raw["fill_holes"])
+            if "brightness_max_smoothness" in raw:
+                profile["brightness_max_smoothness"] = float(
+                    raw["brightness_max_smoothness"]
+                )
         except (TypeError, ValueError):
             return jsonify({"error": f"invalid values for profile '{name}'"}), 400
         if profile:
@@ -284,11 +317,25 @@ def calibrate_preview():
     cluster_min_texture = request.args.get(
         "cluster_min_texture", profile.get("cluster_min_texture", 0.08), type=float
     )
+    cluster_brightness_target = request.args.get(
+        "cluster_brightness_target",
+        profile.get("cluster_brightness_target", 0.5),
+        type=float,
+    )
+    cluster_anchor_bottom = _as_bool(
+        request.args.get("cluster_anchor_bottom"),
+        profile.get("cluster_anchor_bottom", False),
+    )
     brightness_min_contrast = request.args.get(
         "brightness_min_contrast", profile.get("brightness_min_contrast", 40), type=int
     )
     fill_holes_area = request.args.get(
         "fill_holes", profile.get("fill_holes", 0), type=int
+    )
+    brightness_max_smoothness = request.args.get(
+        "brightness_max_smoothness",
+        profile.get("brightness_max_smoothness", 0.0),
+        type=float,
     )
     min_artifact_area = config["min_artifact_area"]
 
@@ -308,6 +355,8 @@ def calibrate_preview():
         mask = compute_mask(
             crop, threshold, min_artifact_area, method, dilate, cluster_k,
             cluster_min_texture, brightness_min_contrast, fill_holes_area,
+            brightness_max_smoothness, cluster_brightness_target,
+            cluster_anchor_bottom,
         )
         coverage = (
             round(float(np.count_nonzero(mask)) / mask.size, 2) if mask.size else 0.0
@@ -332,8 +381,11 @@ def calibrate_preview():
             "dilate": dilate,
             "cluster_k": cluster_k,
             "cluster_min_texture": cluster_min_texture,
+            "cluster_brightness_target": cluster_brightness_target,
+            "cluster_anchor_bottom": cluster_anchor_bottom,
             "brightness_min_contrast": brightness_min_contrast,
             "fill_holes": fill_holes_area,
+            "brightness_max_smoothness": brightness_max_smoothness,
             "results": results,
         }
     )
@@ -358,10 +410,16 @@ def calibrate_save():
         updates["cluster_k"] = int(data["cluster_k"])
     if "cluster_min_texture" in data:
         updates["cluster_min_texture"] = float(data["cluster_min_texture"])
+    if "cluster_brightness_target" in data:
+        updates["cluster_brightness_target"] = float(data["cluster_brightness_target"])
+    if "cluster_anchor_bottom" in data:
+        updates["cluster_anchor_bottom"] = bool(data["cluster_anchor_bottom"])
     if "brightness_min_contrast" in data:
         updates["brightness_min_contrast"] = int(data["brightness_min_contrast"])
     if "fill_holes" in data:
         updates["fill_holes"] = int(data["fill_holes"])
+    if "brightness_max_smoothness" in data:
+        updates["brightness_max_smoothness"] = float(data["brightness_max_smoothness"])
     if not updates:
         return jsonify({"error": "nothing to save"}), 400
     return jsonify(save_profile(profile_name, updates))
