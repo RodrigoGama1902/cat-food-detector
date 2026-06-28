@@ -53,15 +53,13 @@ Run food detection on an image. Returns whether food is present and how full the
 - a multipart form field named `image`, **or**
 - raw bytes in the request body
 
-**Query parameters** (all optional — defaults come from the saved config):
+**Query parameters** (optional):
 
 | Parameter | Type | Description |
 |---|---|---|
 | `night_mode` | bool | Force night (`true`) or day (`false`) profile. Auto-detected from image saturation if omitted. |
-| `threshold` | int | Binarization threshold (0–255). |
-| `minimum_coverage` | float | Minimum ratio to consider food present (0–1). |
-| `full_coverage` | float | Ratio considered "full" (0–1). |
-| `method` | string | Detection method: `texture`, `brightness`, or `cluster`. |
+
+> All detection parameters (threshold, coverage, method, ROI, etc.) come from the configuration saved through the UI. The request cannot override them — only the day/night profile selection via `night_mode`.
 
 **Response `200`**
 

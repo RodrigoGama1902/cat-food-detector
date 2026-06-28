@@ -149,63 +149,33 @@ def detect():
 
     config = load_config()
     args = request.args
-    # The detector auto-detects day/night from the image (grayscale = night).
-    # An explicit ?night_mode=... query param overrides the auto-detection.
+    # Detection always uses the saved configuration from the UI. The only
+    # request-time control is the day/night profile selection: it is
+    # auto-detected from the image (grayscale = night), and an explicit
+    # ?night_mode=... query param overrides that auto-detection.
     auto_night, mean_saturation = detect_night_image(image)
     override = args.get("night_mode")
     night_mode = _is_night(override) if override is not None else auto_night
     profile = get_profile(config, night_mode)
-    roi = (
-        args.get("x", config["roi"][0], type=int),
-        args.get("y", config["roi"][1], type=int),
-        args.get("w", config["roi"][2], type=int),
-        args.get("h", config["roi"][3], type=int),
-    )
+    roi = tuple(config["roi"])
 
     try:
         result = detect_image(
             image,
             roi=roi,
-            threshold=args.get("threshold", profile["threshold"], type=int),
-            minimum_coverage=args.get(
-                "minimum_coverage", profile["minimum_coverage"], type=float
-            ),
-            min_artifact_area=args.get(
-                "min_artifact_area", config["min_artifact_area"], type=int
-            ),
-            method=args.get("method", profile["method"]),
-            dilate=args.get("dilate", profile["dilate"], type=int),
-            full_coverage=args.get(
-                "full_coverage", profile["full_coverage"], type=float
-            ),
-            cluster_k=args.get("cluster_k", profile.get("cluster_k", 4), type=int),
-            cluster_min_texture=args.get(
-                "cluster_min_texture",
-                profile.get("cluster_min_texture", 0.08),
-                type=float,
-            ),
-            cluster_brightness_target=args.get(
-                "cluster_brightness_target",
-                profile.get("cluster_brightness_target", 0.5),
-                type=float,
-            ),
-            cluster_anchor_bottom=_as_bool(
-                args.get("cluster_anchor_bottom"),
-                profile.get("cluster_anchor_bottom", False),
-            ),
-            brightness_min_contrast=args.get(
-                "brightness_min_contrast",
-                profile.get("brightness_min_contrast", 40),
-                type=int,
-            ),
-            fill_holes_area=args.get(
-                "fill_holes", profile.get("fill_holes", 0), type=int
-            ),
-            brightness_max_smoothness=args.get(
-                "brightness_max_smoothness",
-                profile.get("brightness_max_smoothness", 0.0),
-                type=float,
-            ),
+            threshold=profile["threshold"],
+            minimum_coverage=profile["minimum_coverage"],
+            min_artifact_area=config["min_artifact_area"],
+            method=profile["method"],
+            dilate=profile["dilate"],
+            full_coverage=profile["full_coverage"],
+            cluster_k=profile.get("cluster_k", 4),
+            cluster_min_texture=profile.get("cluster_min_texture", 0.08),
+            cluster_brightness_target=profile.get("cluster_brightness_target", 0.5),
+            cluster_anchor_bottom=profile.get("cluster_anchor_bottom", False),
+            brightness_min_contrast=profile.get("brightness_min_contrast", 40),
+            fill_holes_area=profile.get("fill_holes", 0),
+            brightness_max_smoothness=profile.get("brightness_max_smoothness", 0.0),
         )
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
