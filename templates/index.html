@@ -90,7 +90,7 @@
     <h1>🐱 Cat Food Detector</h1>
     <div class="cfg-edit">
       <input type="text" class="cfg" id="cfg" spellcheck="false"
-        placeholder="roi=[x, y, w, h] day[texture thr=43 cov=0.17→0.42] night[cluster k=4 cov=0.08→0.22]" />
+        placeholder="roi=[x, y, w, h] day[texture thr=43 cov=0.17→0.42] night[cluster k=4 tex=0.08 bright=0.5 anchor cov=0.08→0.22]" />
       <button class="secondary" id="cfgApply">Apply</button>
     </div>
   </header>
@@ -222,10 +222,19 @@
     }
 
     function profileBlock(p) {
-      // Cluster profiles show k=; brightness/texture show thr=.
-      const param = p.method === "cluster"
-        ? `k=${p.cluster_k != null ? p.cluster_k : 4}`
-        : `thr=${p.threshold}`;
+      // Cluster profiles show k= plus their granularity/brightness/anchor
+      // extras; brightness/texture show thr=.
+      let param;
+      if (p.method === "cluster") {
+        const parts = [`k=${p.cluster_k != null ? p.cluster_k : 4}`];
+        parts.push(`tex=${p.cluster_min_texture != null ? p.cluster_min_texture : 0.08}`);
+        parts.push(`bright=${p.cluster_brightness_target != null ? p.cluster_brightness_target : 0.5}`);
+        if (p.cluster_anchor_bottom) parts.push("anchor");
+        param = parts.join(" ");
+      } else {
+        param = `thr=${p.threshold}`;
+        if (p.cluster_anchor_bottom) param += " anchor";
+      }
       return `${p.method} ${param} cov=${p.minimum_coverage}→${p.full_coverage}`;
     }
 
@@ -236,10 +245,14 @@
     }
 
     function parseProfileBlock(text) {
-      // e.g. "texture thr=43 cov=0.17→0.42" or "cluster k=4 cov=0.17→0.42".
+      // e.g. "texture thr=43 cov=0.17→0.42" or
+      // "cluster k=4 tex=0.08 bright=0.5 anchor cov=0.17→0.42".
       const method = text.trim().match(/^([a-z]+)/i);
       const thr = text.match(/thr=(\d+)/i);
       const k = text.match(/k=(\d+)/i);
+      const tex = text.match(/tex=([\d.]+)/i);
+      const bright = text.match(/bright=([\d.]+)/i);
+      const anchor = /\banchor\b/i.test(text);
       const cov = text.match(/cov=([\d.]+)\s*(?:→|->)\s*([\d.]+)/i);
       if (!method || !cov) return null;
       const name = method[1].toLowerCase();
@@ -253,9 +266,12 @@
         method: name,
         minimum_coverage: parseFloat(cov[1]),
         full_coverage: parseFloat(cov[2]),
+        cluster_anchor_bottom: anchor,
       };
       if (thr) block.threshold = parseInt(thr[1], 10);
       if (k) block.cluster_k = parseInt(k[1], 10);
+      if (tex) block.cluster_min_texture = parseFloat(tex[1]);
+      if (bright) block.cluster_brightness_target = parseFloat(bright[1]);
       return block;
     }
 
