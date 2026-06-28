@@ -435,6 +435,8 @@ def calibrate_save():
         updates["cluster_brightness_target"] = float(data["cluster_brightness_target"])
     if "cluster_anchor_bottom" in data:
         updates["cluster_anchor_bottom"] = bool(data["cluster_anchor_bottom"])
+    if "cluster_max_brightness" in data:
+        updates["cluster_max_brightness"] = float(data["cluster_max_brightness"])
     if "brightness_min_contrast" in data:
         updates["brightness_min_contrast"] = int(data["brightness_min_contrast"])
     if "fill_holes" in data:
