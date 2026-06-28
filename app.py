@@ -18,6 +18,9 @@ calibration persists across restarts (CONFIG_PATH env var).
 import base64
 import os
 import tempfile
+import threading
+import time
+from datetime import datetime, timezone
 
 import cv2
 import numpy as np
@@ -49,6 +52,10 @@ _TRUE = {"1", "true", "yes", "on"}
 # Mean saturation below this means the frame is effectively grayscale (IR night
 # mode). Color daytime frames sit well above it.
 NIGHT_SATURATION_MAX = 12.0
+
+# Cache for the last successful detection result, returned by GET /status.
+_status_lock = threading.Lock()
+_last_status: dict | None = None
 
 
 def _is_night(value, default=False):
@@ -111,9 +118,26 @@ def health():
     return jsonify({"status": "ok"})
 
 
+@app.get("/status")
+def status():
+    """Return the last detection result cached by POST /detect.
+
+    Response:
+        200  {"food_present": bool, "coverage": float, "latency_ms": int,
+               "last_detection": "<ISO-8601 UTC>"}
+        503  {"error": "no detection yet"} when /detect has never been called.
+    """
+    with _status_lock:
+        snapshot = _last_status
+    if snapshot is None:
+        return jsonify({"error": "no detection yet"}), 503
+    return jsonify(snapshot)
+
+
 # --- Detection ---------------------------------------------------------------
 @app.post("/detect")
 def detect():
+    _t0 = time.monotonic()
     raw = _read_image_bytes()
     if not raw:
         return jsonify({"error": "No image provided."}), 400
@@ -189,6 +213,17 @@ def detect():
     result["night_mode"] = night_mode
     result["auto_detected"] = override is None
     result["mean_saturation"] = round(mean_saturation, 1)
+
+    latency_ms = round((time.monotonic() - _t0) * 1000)
+    with _status_lock:
+        global _last_status
+        _last_status = {
+            "food_present": result["food_present"],
+            "coverage": result["coverage"],
+            "latency_ms": latency_ms,
+            "last_detection": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+
     return jsonify(result)
 
 
