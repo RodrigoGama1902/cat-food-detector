@@ -363,7 +363,7 @@
       $("clusterRow").style.display = isCluster ? "flex" : "none";
       $("clusterTexRow").style.display = isCluster ? "flex" : "none";
       $("clusterBrightRow").style.display = isCluster ? "flex" : "none";
-      $("clusterAnchorRow").style.display = isCluster ? "flex" : "none";
+      $("clusterAnchorRow").style.display = (isCluster || isBrightness) ? "flex" : "none";
       $("brightContrastRow").style.display = isBrightness ? "flex" : "none";
       $("brightSmoothRow").style.display = isBrightness ? "flex" : "none";
       // Dilate fills both textured and clustered blobs.

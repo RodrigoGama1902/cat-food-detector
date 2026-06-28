@@ -129,6 +129,10 @@ def compute_mask(
         mask = _brightness_mask(
             gray, threshold, brightness_min_contrast, brightness_max_smoothness
         )
+        if cluster_anchor_bottom:
+            # Same geometric gate as the cluster method: keep only food that
+            # rests on the bowl bottom and does not hang from the top.
+            mask = _filter_anchor_bottom(mask)
     elif method == "cluster":
         # Food forms one large homogeneous color/texture blob; isolate it.
         mask = _cluster_mask(
@@ -220,6 +224,26 @@ def _texture_mask(gray, edge_threshold, dilate):
     # Close gaps so scattered edges merge into solid food blobs.
     edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
     return edges
+
+
+def _filter_anchor_bottom(mask):
+    """Keep only blobs that rest on the bottom edge and clear the top edge.
+
+    A food pile sits at the bowl bottom, whereas shadows or wall reflections
+    usually hang from the top. Each connected component is discarded unless its
+    bounding box reaches the last row of the mask and does not touch the first
+    row.
+    """
+    height = mask.shape[0]
+    num, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    kept = np.zeros_like(mask)
+    for label in range(1, num):
+        top = stats[label, cv2.CC_STAT_TOP]
+        bottom = top + stats[label, cv2.CC_STAT_HEIGHT]
+        if bottom < height or top <= 0:
+            continue
+        kept[labels == label] = 255
+    return kept
 
 
 def _cluster_mask(
