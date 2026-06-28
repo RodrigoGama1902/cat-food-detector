@@ -29,8 +29,14 @@
       align-items: baseline;
       gap: 16px;
     }
-    header h1 { font-size: 18px; margin: 0; }
-    header .cfg { color: var(--muted); font-size: 13px; font-family: monospace; }
+    header h1 { font-size: 18px; margin: 0; white-space: nowrap; }
+    header .cfg-edit { display: flex; gap: 8px; flex: 1; align-items: center; }
+    header input.cfg {
+      flex: 1; min-width: 0; color: var(--text); font-size: 13px; font-family: monospace;
+      background: #11141a; border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px;
+    }
+    header input.cfg:focus { outline: none; border-color: var(--accent); }
+    header .cfg-edit button { margin: 0; padding: 7px 14px; }
     .tabs { display: flex; gap: 8px; padding: 16px 24px 0; }
     .tab {
       padding: 8px 16px; border: 1px solid var(--border); border-bottom: none;
@@ -82,7 +88,11 @@
 <body>
   <header>
     <h1>🐱 Cat Food Detector</h1>
-    <span class="cfg" id="cfg"></span>
+    <div class="cfg-edit">
+      <input type="text" class="cfg" id="cfg" spellcheck="false"
+        placeholder="roi=[x, y, w, h] day[texture thr=43 cov=0.17→0.42] night[texture thr=32 cov=0.08→0.22]" />
+      <button class="secondary" id="cfgApply">Apply</button>
+    </div>
   </header>
 
   <div class="tabs">
@@ -177,8 +187,41 @@
 
     function showConfig() {
       const d = config.profiles.day, n = config.profiles.night;
-      $("cfg").textContent =
+      $("cfg").value =
         `roi=[${config.roi.join(", ")}]  day[${d.method} thr=${d.threshold} cov=${d.minimum_coverage}→${d.full_coverage}]  night[${n.method} thr=${n.threshold} cov=${n.minimum_coverage}→${n.full_coverage}]`;
+    }
+
+    function parseProfileBlock(text) {
+      // e.g. "texture thr=43 cov=0.17→0.42" (→ or -> accepted)
+      const method = text.trim().match(/^([a-z]+)/i);
+      const thr = text.match(/thr=(\d+)/i);
+      const cov = text.match(/cov=([\d.]+)\s*(?:→|->)\s*([\d.]+)/i);
+      if (!method || !thr || !cov) return null;
+      return {
+        method: method[1].toLowerCase(),
+        threshold: parseInt(thr[1], 10),
+        minimum_coverage: parseFloat(cov[1]),
+        full_coverage: parseFloat(cov[2]),
+      };
+    }
+
+    function parseConfigString(str) {
+      const roiM = str.match(/roi=\[([^\]]+)\]/i);
+      const dayM = str.match(/day\[([^\]]+)\]/i);
+      const nightM = str.match(/night\[([^\]]+)\]/i);
+      if (!roiM || !dayM || !nightM) {
+        throw new Error("Format: roi=[x, y, w, h] day[...] night[...]");
+      }
+      const roi = roiM[1].split(",").map((s) => parseInt(s.trim(), 10));
+      if (roi.length !== 4 || roi.some((v) => Number.isNaN(v))) {
+        throw new Error("roi must be 4 integers");
+      }
+      const day = parseProfileBlock(dayM[1]);
+      const night = parseProfileBlock(nightM[1]);
+      if (!day || !night) {
+        throw new Error("Each profile: <method> thr=NN cov=N.NN→N.NN");
+      }
+      return { roi, profiles: { day, night } };
     }
 
     function currentProfile() {
@@ -206,6 +249,36 @@
       roi = config.roi.slice();
       updateRoiReadout();
     }
+
+    $("cfgApply").addEventListener("click", async () => {
+      let payload;
+      try {
+        payload = parseConfigString($("cfg").value);
+      } catch (err) {
+        toast(err.message);
+        return;
+      }
+      const res = await fetch("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        config = data;
+        showConfig();
+        loadProfileIntoSliders();
+        roi = config.roi.slice();
+        updateRoiReadout();
+        toast("Config saved");
+      } else {
+        toast(data.error || "Error");
+      }
+    });
+
+    $("cfg").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); $("cfgApply").click(); }
+    });
 
     function applyMethodUI() {
       const isTexture = $("method").value === "texture";

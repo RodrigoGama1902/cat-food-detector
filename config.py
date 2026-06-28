@@ -103,3 +103,20 @@ def save_profile(profile_name, updates):
         raise ValueError(f"unknown profile: {profile_name}")
     config["profiles"][profile_name].update(updates)
     return _write(config)
+
+
+def apply_config(updates):
+    """Merge top-level and per-profile updates at once, persisting a single time.
+
+    `updates` may contain 'roi', 'min_artifact_area', and 'profiles' (a dict of
+    profile name -> partial profile dict). Missing keys keep their saved values,
+    and the config file is created if it does not exist yet.
+    """
+    config = load_config()
+    for key in ("roi", "min_artifact_area"):
+        if key in updates:
+            config[key] = updates[key]
+    for name in PROFILE_NAMES:
+        if name in updates.get("profiles", {}):
+            config["profiles"][name].update(updates["profiles"][name])
+    return _write(config)

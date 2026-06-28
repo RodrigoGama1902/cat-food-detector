@@ -23,7 +23,14 @@ import cv2
 import numpy as np
 from flask import Flask, jsonify, render_template, request
 
-from config import PROFILE_NAMES, get_profile, load_config, save_config, save_profile
+from config import (
+    PROFILE_NAMES,
+    apply_config,
+    get_profile,
+    load_config,
+    save_config,
+    save_profile,
+)
 from detector import compute_mask, crop_roi, detect_image, normalize_coverage
 
 app = Flask(__name__)
@@ -152,6 +159,59 @@ def detect():
 @app.get("/api/config")
 def get_config():
     return jsonify(load_config())
+
+
+@app.post("/api/config")
+def update_config():
+    """Persist a full config edited from the header text field.
+
+    Accepts {"roi": [...], "profiles": {"day": {...}, "night": {...}}}; any
+    omitted keys keep their saved values. Creates the config file if absent.
+    """
+    data = request.get_json(silent=True) or {}
+    updates = {}
+
+    roi = data.get("roi")
+    if roi is not None:
+        if len(roi) != 4:
+            return jsonify({"error": "roi must be [x, y, w, h]"}), 400
+        try:
+            roi = [int(v) for v in roi]
+        except (TypeError, ValueError):
+            return jsonify({"error": "roi values must be integers"}), 400
+        if roi[2] <= 0 or roi[3] <= 0:
+            return jsonify({"error": "width and height must be positive"}), 400
+        updates["roi"] = roi
+
+    profiles = data.get("profiles") or {}
+    clean_profiles = {}
+    for name, raw in profiles.items():
+        if name not in PROFILE_NAMES or not isinstance(raw, dict):
+            continue
+        profile = {}
+        try:
+            if "method" in raw:
+                if raw["method"] not in ("texture", "brightness"):
+                    return jsonify({"error": f"invalid method: {raw['method']}"}), 400
+                profile["method"] = raw["method"]
+            if "threshold" in raw:
+                profile["threshold"] = int(raw["threshold"])
+            if "minimum_coverage" in raw:
+                profile["minimum_coverage"] = float(raw["minimum_coverage"])
+            if "full_coverage" in raw:
+                profile["full_coverage"] = float(raw["full_coverage"])
+            if "dilate" in raw:
+                profile["dilate"] = int(raw["dilate"])
+        except (TypeError, ValueError):
+            return jsonify({"error": f"invalid values for profile '{name}'"}), 400
+        if profile:
+            clean_profiles[name] = profile
+    if clean_profiles:
+        updates["profiles"] = clean_profiles
+
+    if not updates:
+        return jsonify({"error": "nothing to update"}), 400
+    return jsonify(apply_config(updates))
 
 
 @app.post("/api/roi")
