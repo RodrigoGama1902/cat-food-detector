@@ -1,8 +1,8 @@
 services:
-  cat-food-detector:
+  cat_bowl_server:
     build: .
-    image: cat-food-detector
-    container_name: cat-food-detector
+    image: cat_bowl_server
+    container_name: cat_bowl_server
     ports:
       - "8000:8000"
     volumes:
