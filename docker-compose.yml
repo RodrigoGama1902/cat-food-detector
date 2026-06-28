@@ -1,0 +1,10 @@
+services:
+  cat-food-detector:
+    build: .
+    image: cat-food-detector
+    container_name: cat-food-detector
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

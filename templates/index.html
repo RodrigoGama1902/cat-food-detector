@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cat Food Detector — Configuration</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #181b22;
+      --border: #2a2f3a;
+      --text: #e6e8eb;
+      --muted: #9aa3b2;
+      --accent: #4f9dff;
+      --ok: #3ecf8e;
+      --bad: #ff6b6b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      padding: 18px 24px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: baseline;
+      gap: 16px;
+    }
+    header h1 { font-size: 18px; margin: 0; }
+    header .cfg { color: var(--muted); font-size: 13px; font-family: monospace; }
+    .tabs { display: flex; gap: 8px; padding: 16px 24px 0; }
+    .tab {
+      padding: 8px 16px; border: 1px solid var(--border); border-bottom: none;
+      background: var(--panel); color: var(--muted); cursor: pointer;
+      border-radius: 8px 8px 0 0;
+    }
+    .tab.active { color: var(--text); border-color: var(--accent); }
+    .panel {
+      margin: 0 24px 24px; padding: 20px; background: var(--panel);
+      border: 1px solid var(--border); border-radius: 0 8px 8px 8px;
+    }
+    .panel.hidden { display: none; }
+    h2 { font-size: 15px; margin: 0 0 12px; }
+    label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
+    input[type="file"] { color: var(--muted); font-size: 13px; }
+    button {
+      background: var(--accent); color: #fff; border: none; padding: 9px 18px;
+      border-radius: 6px; cursor: pointer; font-size: 14px; margin-top: 14px;
+    }
+    button.secondary { background: #2a2f3a; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .canvas-wrap { border: 1px solid var(--border); border-radius: 6px; overflow: auto; max-width: 100%; }
+    canvas { display: block; cursor: crosshair; max-width: 100%; }
+    .roi-readout { font-family: monospace; font-size: 14px; margin-top: 12px; }
+    .row { display: flex; gap: 24px; flex-wrap: wrap; align-items: center; }
+    .slider-row { display: flex; align-items: center; gap: 12px; margin: 10px 0; }
+    .slider-row input[type="range"] { flex: 1; }
+    .slider-row .val { font-family: monospace; min-width: 56px; text-align: right; }
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 18px; }
+    .card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+    .card h3 { margin: 0 0 8px; font-size: 13px; color: var(--muted); text-transform: uppercase; }
+    .card img { width: 100%; image-rendering: pixelated; border: 1px solid var(--border); border-radius: 4px; background: #000; }
+    .card .imgs { display: flex; gap: 8px; }
+    .card .imgs div { flex: 1; }
+    .card .imgs span { font-size: 11px; color: var(--muted); }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+    .badge.ok { background: rgba(62,207,142,0.15); color: var(--ok); }
+    .badge.bad { background: rgba(255,107,107,0.15); color: var(--bad); }
+    .coverage { font-size: 22px; font-family: monospace; margin: 6px 0; }
+    .hint { color: var(--muted); font-size: 13px; margin: 6px 0; }
+    .toast { position: fixed; bottom: 20px; right: 20px; background: var(--ok); color: #04231a;
+      padding: 10px 18px; border-radius: 6px; font-size: 14px; opacity: 0; transition: opacity .2s; }
+    .toast.show { opacity: 1; }
+    .result { margin-top: 18px; border: 1px solid var(--border); border-radius: 8px; padding: 18px; display: inline-block; min-width: 220px; }
+    .result .coverage { font-size: 32px; }
+    .result.err { color: var(--bad); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🐱 Cat Food Detector</h1>
+    <span class="cfg" id="cfg"></span>
+  </header>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="roi">ROI</div>
+    <div class="tab" data-tab="calib">Threshold / Coverage</div>
+    <div class="tab" data-tab="test">Final Test</div>
+  </div>
+
+  <!-- ROI TAB -->
+  <section class="panel" id="panel-roi">
+    <h2>Region of Interest</h2>
+    <p class="hint">Upload a snapshot, drag a rectangle over the bowl, then save. Coordinates are stored in the image's native pixels.</p>
+    <input type="file" id="roiFile" accept="image/*" />
+    <div class="row" style="margin-top:14px;">
+      <div class="canvas-wrap"><canvas id="roiCanvas" width="600" height="338"></canvas></div>
+    </div>
+    <div class="roi-readout" id="roiReadout">ROI: —</div>
+    <button id="roiSave" disabled>Save ROI</button>
+  </section>
+
+  <!-- CALIBRATION TAB -->
+  <section class="panel hidden" id="panel-calib">
+    <h2>Calibrate Threshold &amp; Minimum Coverage</h2>
+    <p class="hint">Pick a profile, upload one image per bowl state for it, then move the sliders. Day and night are calibrated independently.</p>
+    <div class="slider-row">
+      <label style="margin:0;width:140px;">Profile</label>
+      <select id="profile" style="flex:1;background:#11141a;color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px;">
+        <option value="day">☀️ Day</option>
+        <option value="night">🌙 Night</option>
+      </select>
+    </div>
+    <div class="row">
+      <div><label>Empty bowl</label><input type="file" id="fileEmpty" accept="image/*" /></div>
+      <div><label>Medium</label><input type="file" id="fileMedium" accept="image/*" /></div>
+      <div><label>Full bowl</label><input type="file" id="fileFull" accept="image/*" /></div>
+    </div>
+    <button id="calibUpload">Upload images</button>
+
+    <div class="slider-row">
+      <label style="margin:0;width:140px;">Method</label>
+      <select id="method" style="flex:1;background:#11141a;color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px;">
+        <option value="texture">Texture (lighting-robust)</option>
+        <option value="brightness">Brightness (dark = food)</option>
+      </select>
+    </div>
+    <div class="slider-row">
+      <label style="margin:0;width:140px;" id="thrLabel">Edge sensitivity</label>
+      <input type="range" id="thr" min="0" max="255" value="60" />
+      <span class="val" id="thrVal">60</span>
+    </div>
+    <div class="slider-row" id="dilateRow">
+      <label style="margin:0;width:140px;">Dilate (fill)</label>
+      <input type="range" id="dilate" min="0" max="6" value="1" />
+      <span class="val" id="dilateVal">1</span>
+    </div>
+    <div class="slider-row">
+      <label style="margin:0;width:140px;">Min. coverage</label>
+      <input type="range" id="mincov" min="0" max="1" step="0.01" value="0.45" />
+      <span class="val" id="mincovVal">0.45</span>
+    </div>
+    <div class="slider-row">
+      <label style="margin:0;width:140px;">Full coverage</label>
+      <input type="range" id="fullcov" min="0" max="1" step="0.01" value="0.62" />
+      <span class="val" id="fullcovVal">0.62</span>
+    </div>
+
+    <div class="cards" id="cards"></div>
+    <button id="calibSave">Save calibration</button>
+  </section>
+
+  <!-- FINAL TEST TAB -->
+  <section class="panel hidden" id="panel-test">
+    <h2>Final Test</h2>
+    <p class="hint">Upload any snapshot and run the detector exactly like the <code>/detect</code> endpoint. Day/night is auto-detected from the image (grayscale = night).</p>
+    <input type="file" id="testFile" accept="image/*" />
+    <button id="testRun" disabled>Run detection</button>
+    <div id="testResult"></div>
+  </section>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let config = null;
+
+    function toast(msg) {
+      const t = $("toast");
+      t.textContent = msg;
+      t.classList.add("show");
+      setTimeout(() => t.classList.remove("show"), 1800);
+    }
+
+    function showConfig() {
+      const d = config.profiles.day, n = config.profiles.night;
+      $("cfg").textContent =
+        `roi=[${config.roi.join(", ")}]  day[${d.method} thr=${d.threshold} cov=${d.minimum_coverage}→${d.full_coverage}]  night[${n.method} thr=${n.threshold} cov=${n.minimum_coverage}→${n.full_coverage}]`;
+    }
+
+    function currentProfile() {
+      return config.profiles[$("profile").value];
+    }
+
+    function loadProfileIntoSliders() {
+      const p = currentProfile();
+      $("thr").value = p.threshold;
+      $("thrVal").textContent = p.threshold;
+      $("mincov").value = p.minimum_coverage;
+      $("mincovVal").textContent = p.minimum_coverage;
+      $("fullcov").value = p.full_coverage;
+      $("fullcovVal").textContent = p.full_coverage;
+      $("method").value = p.method;
+      $("dilate").value = p.dilate;
+      $("dilateVal").textContent = p.dilate;
+      applyMethodUI();
+    }
+
+    async function loadConfig() {
+      config = await (await fetch("/api/config")).json();
+      showConfig();
+      loadProfileIntoSliders();
+      roi = config.roi.slice();
+      updateRoiReadout();
+    }
+
+    function applyMethodUI() {
+      const isTexture = $("method").value === "texture";
+      $("thrLabel").textContent = isTexture ? "Edge sensitivity" : "Threshold";
+      $("dilateRow").style.display = isTexture ? "flex" : "none";
+    }
+
+    // --- Tabs ---
+    document.querySelectorAll(".tab").forEach((tab) => {
+      tab.addEventListener("click", () => {
+        document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+        tab.classList.add("active");
+        $("panel-roi").classList.toggle("hidden", tab.dataset.tab !== "roi");
+        $("panel-calib").classList.toggle("hidden", tab.dataset.tab !== "calib");
+        $("panel-test").classList.toggle("hidden", tab.dataset.tab !== "test");
+      });
+    });
+
+    // --- ROI tool ---
+    const canvas = $("roiCanvas");
+    const ctx = canvas.getContext("2d");
+    let img = null, scale = 1, roi = [0, 0, 0, 0];
+    let dragging = false, startX = 0, startY = 0, curRect = null;
+
+    $("roiFile").addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        img = new Image();
+        img.onload = () => {
+          const maxW = 900;
+          scale = Math.min(1, maxW / img.naturalWidth);
+          canvas.width = Math.round(img.naturalWidth * scale);
+          canvas.height = Math.round(img.naturalHeight * scale);
+          curRect = null;
+          drawCanvas();
+          $("roiSave").disabled = true;
+        };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    });
+
+    function drawCanvas() {
+      if (!img) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      if (curRect) {
+        ctx.strokeStyle = "#4f9dff";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(curRect.x, curRect.y, curRect.w, curRect.h);
+        ctx.fillStyle = "rgba(79,157,255,0.15)";
+        ctx.fillRect(curRect.x, curRect.y, curRect.w, curRect.h);
+      }
+    }
+
+    function canvasPos(e) {
+      const r = canvas.getBoundingClientRect();
+      return {
+        x: (e.clientX - r.left) * (canvas.width / r.width),
+        y: (e.clientY - r.top) * (canvas.height / r.height),
+      };
+    }
+
+    canvas.addEventListener("mousedown", (e) => {
+      if (!img) return;
+      dragging = true;
+      const p = canvasPos(e);
+      startX = p.x; startY = p.y;
+    });
+    canvas.addEventListener("mousemove", (e) => {
+      if (!dragging) return;
+      const p = canvasPos(e);
+      curRect = {
+        x: Math.min(startX, p.x), y: Math.min(startY, p.y),
+        w: Math.abs(p.x - startX), h: Math.abs(p.y - startY),
+      };
+      drawCanvas();
+    });
+    window.addEventListener("mouseup", () => {
+      if (!dragging) return;
+      dragging = false;
+      if (curRect && curRect.w > 3 && curRect.h > 3) {
+        roi = [
+          Math.round(curRect.x / scale), Math.round(curRect.y / scale),
+          Math.round(curRect.w / scale), Math.round(curRect.h / scale),
+        ];
+        updateRoiReadout();
+        $("roiSave").disabled = false;
+      }
+    });
+
+    function updateRoiReadout() {
+      $("roiReadout").textContent = `ROI: x=${roi[0]} y=${roi[1]} w=${roi[2]} h=${roi[3]}`;
+    }
+
+    $("roiSave").addEventListener("click", async () => {
+      const res = await fetch("/api/roi", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roi }),
+      });
+      const data = await res.json();
+      if (res.ok) { config = data; showConfig(); toast("ROI saved"); }
+      else toast(data.error || "Error");
+    });
+
+    // --- Calibration ---
+    $("profile").addEventListener("change", () => {
+      loadProfileIntoSliders();
+      $("cards").innerHTML = "";
+      refreshPreview();
+    });
+
+    $("calibUpload").addEventListener("click", async () => {
+      const fd = new FormData();
+      const map = { empty: "fileEmpty", medium: "fileMedium", full: "fileFull" };
+      let any = false;
+      for (const [slot, id] of Object.entries(map)) {
+        const f = $(id).files[0];
+        if (f) { fd.append(slot, f); any = true; }
+      }
+      if (!any) { toast("Select at least one image"); return; }
+      const res = await fetch(`/api/calibrate/upload?profile=${$("profile").value}`, { method: "POST", body: fd });
+      if (res.ok) { toast("Images uploaded"); refreshPreview(); }
+      else toast("Upload failed");
+    });
+
+    $("thr").addEventListener("input", () => { $("thrVal").textContent = $("thr").value; refreshPreview(); });
+    $("mincov").addEventListener("input", () => { $("mincovVal").textContent = $("mincov").value; refreshPreview(); });
+    $("fullcov").addEventListener("input", () => { $("fullcovVal").textContent = $("fullcov").value; refreshPreview(); });
+    $("dilate").addEventListener("input", () => { $("dilateVal").textContent = $("dilate").value; refreshPreview(); });
+    $("method").addEventListener("change", () => { applyMethodUI(); refreshPreview(); });
+
+    let previewTimer = null;
+    function refreshPreview() {
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(doPreview, 150);
+    }
+
+    async function doPreview() {
+      const t = $("thr").value, m = $("mincov").value;
+      const method = $("method").value, d = $("dilate").value;
+      const f = $("fullcov").value;
+      const profile = $("profile").value;
+      const res = await fetch(
+        `/api/calibrate/preview?profile=${profile}&threshold=${t}&minimum_coverage=${m}&full_coverage=${f}&method=${method}&dilate=${d}`
+      );
+      const data = await res.json();
+      renderCards(data.results);
+    }
+
+    const LABELS = { empty: "Empty", medium: "Medium", full: "Full" };
+    function renderCards(results) {
+      const order = ["empty", "medium", "full"];
+      $("cards").innerHTML = order.map((slot) => {
+        const r = results[slot];
+        if (!r) return `<div class="card"><h3>${LABELS[slot]}</h3><p class="hint">No image</p></div>`;
+        if (r.error) return `<div class="card"><h3>${LABELS[slot]}</h3><p class="badge bad">${r.error}</p></div>`;
+        const badge = r.food_present
+          ? '<span class="badge ok">food present</span>'
+          : '<span class="badge bad">empty</span>';
+        return `<div class="card">
+          <h3>${LABELS[slot]}</h3>
+          <div class="coverage">${r.normalized}</div>
+          <div class="hint">raw ${r.coverage}</div>
+          ${badge}
+          <div class="imgs" style="margin-top:10px;">
+            <div><img src="${r.crop}" alt="crop" /><span>ROI</span></div>
+            <div><img src="${r.mask}" alt="mask" /><span>mask</span></div>
+          </div>
+        </div>`;
+      }).join("");
+    }
+
+    $("calibSave").addEventListener("click", async () => {
+      const res = await fetch("/api/calibrate/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profile: $("profile").value,
+          threshold: parseInt($("thr").value, 10),
+          minimum_coverage: parseFloat($("mincov").value),
+          full_coverage: parseFloat($("fullcov").value),
+          method: $("method").value,
+          dilate: parseInt($("dilate").value, 10),
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) { config = data; showConfig(); toast(`Saved ${$("profile").value} profile`); }
+      else toast(data.error || "Error");
+    });
+
+    // --- Final test ---
+    $("testFile").addEventListener("change", () => {
+      $("testRun").disabled = !$("testFile").files[0];
+      $("testResult").innerHTML = "";
+    });
+
+    $("testRun").addEventListener("click", async () => {
+      const file = $("testFile").files[0];
+      if (!file) return;
+      $("testRun").disabled = true;
+      $("testResult").innerHTML = '<p class="hint">Running…</p>';
+      try {
+        const res = await fetch("/detect", {
+          method: "POST",
+          headers: { "Content-Type": file.type || "application/octet-stream" },
+          body: file,
+        });
+        const data = await res.json();
+        if (res.ok) {
+          const badge = data.food_present
+            ? '<span class="badge ok">food present</span>'
+            : '<span class="badge bad">empty</span>';
+          const mode = data.night_mode ? "🌙 Night" : "☀️ Day";
+          $("testResult").innerHTML =
+            `<div class="result"><div class="coverage">${data.coverage}</div>${badge}` +
+            `<div class="hint" style="margin-top:10px;">Mode: ${mode} (auto) · saturation=${data.mean_saturation}</div></div>`;
+        } else {
+          $("testResult").innerHTML = `<div class="result err">${data.error || "Error"}</div>`;
+        }
+      } catch (err) {
+        $("testResult").innerHTML = `<div class="result err">${err}</div>`;
+      } finally {
+        $("testRun").disabled = false;
+      }
+    });
+
+    loadConfig();
+  </script>
+</body>
+</html>
