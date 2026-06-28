@@ -173,6 +173,7 @@ def detect():
             cluster_min_texture=profile.get("cluster_min_texture", 0.08),
             cluster_brightness_target=profile.get("cluster_brightness_target", 0.5),
             cluster_anchor_bottom=profile.get("cluster_anchor_bottom", False),
+            cluster_max_brightness=profile.get("cluster_max_brightness", 1.0),
             brightness_min_contrast=profile.get("brightness_min_contrast", 40),
             fill_holes_area=profile.get("fill_holes", 0),
             brightness_max_smoothness=profile.get("brightness_max_smoothness", 0.0),
@@ -261,6 +262,8 @@ def update_config():
                 )
             if "cluster_anchor_bottom" in raw:
                 profile["cluster_anchor_bottom"] = bool(raw["cluster_anchor_bottom"])
+            if "cluster_max_brightness" in raw:
+                profile["cluster_max_brightness"] = float(raw["cluster_max_brightness"])
             if "brightness_min_contrast" in raw:
                 profile["brightness_min_contrast"] = int(raw["brightness_min_contrast"])
             if "fill_holes" in raw:
@@ -338,6 +341,11 @@ def calibrate_preview():
         request.args.get("cluster_anchor_bottom"),
         profile.get("cluster_anchor_bottom", False),
     )
+    cluster_max_brightness = request.args.get(
+        "cluster_max_brightness",
+        profile.get("cluster_max_brightness", 1.0),
+        type=float,
+    )
     brightness_min_contrast = request.args.get(
         "brightness_min_contrast", profile.get("brightness_min_contrast", 40), type=int
     )
@@ -368,7 +376,7 @@ def calibrate_preview():
             crop, threshold, min_artifact_area, method, dilate, cluster_k,
             cluster_min_texture, brightness_min_contrast, fill_holes_area,
             brightness_max_smoothness, cluster_brightness_target,
-            cluster_anchor_bottom,
+            cluster_anchor_bottom, cluster_max_brightness,
         )
         coverage = (
             round(float(np.count_nonzero(mask)) / mask.size, 2) if mask.size else 0.0
@@ -395,6 +403,7 @@ def calibrate_preview():
             "cluster_min_texture": cluster_min_texture,
             "cluster_brightness_target": cluster_brightness_target,
             "cluster_anchor_bottom": cluster_anchor_bottom,
+            "cluster_max_brightness": cluster_max_brightness,
             "brightness_min_contrast": brightness_min_contrast,
             "fill_holes": fill_holes_area,
             "brightness_max_smoothness": brightness_max_smoothness,

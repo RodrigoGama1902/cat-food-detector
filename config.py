@@ -25,6 +25,10 @@ PROFILE_DEFAULTS = {
     # Cluster method: hard gate that only accepts blobs resting on the bottom
     # edge of the ROI and clear of the top edge. Disabled by default.
     "cluster_anchor_bottom": False,
+    # Cluster method: absolute maximum mean brightness (0..1) a blob may have to
+    # count as food; brighter blobs are rejected. Drops dim-but-not-dark patches
+    # when the food (or bowl shadow) is the darkest region. 1.0 disables it.
+    "cluster_max_brightness": 1.0,
     # Brightness method: minimum spread (0..255) between the bowl's darkest and
     # brightest zones for it to count as containing food. Below this the bowl
     # is treated as empty (a clean bowl is almost uniformly bright).
@@ -69,6 +73,7 @@ def _migrate(raw):
             "cluster_min_texture",
             "cluster_brightness_target",
             "cluster_anchor_bottom",
+            "cluster_max_brightness",
             "brightness_min_contrast",
             "brightness_max_smoothness",
             "fill_holes",

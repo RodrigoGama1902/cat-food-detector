@@ -68,6 +68,12 @@ CLUSTER_BRIGHTNESS_TARGET = _DAY.get("cluster_brightness_target", 0.5)
 # shadow or wall reflection often hangs from the top). Disabled by default.
 CLUSTER_ANCHOR_BOTTOM = _DAY.get("cluster_anchor_bottom", False)
 
+# Cluster method: absolute maximum mean brightness (0..1) a blob may have to
+# qualify as food. Blobs brighter than this are rejected outright, which drops
+# dim-but-not-dark patches when the food (or bowl shadow) is the darkest region.
+# 1.0 disables the gate (accept any brightness).
+CLUSTER_MAX_BRIGHTNESS = _DAY.get("cluster_max_brightness", 1.0)
+
 # Brightness method: minimum spread (0..255) between the bowl's darkest and
 # brightest zones for it to count as food. Below this the bowl is treated as
 # empty (a clean bowl is almost uniformly bright).
@@ -119,6 +125,7 @@ def compute_mask(
     brightness_max_smoothness=BRIGHTNESS_MAX_SMOOTHNESS,
     cluster_brightness_target=CLUSTER_BRIGHTNESS_TARGET,
     cluster_anchor_bottom=CLUSTER_ANCHOR_BOTTOM,
+    cluster_max_brightness=CLUSTER_MAX_BRIGHTNESS,
 ):
     """Return the binary food mask for the cropped region."""
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
@@ -137,7 +144,7 @@ def compute_mask(
         # Food forms one large homogeneous color/texture blob; isolate it.
         mask = _cluster_mask(
             crop, cluster_k, dilate, cluster_min_texture, cluster_brightness_target,
-            cluster_anchor_bottom,
+            cluster_anchor_bottom, cluster_max_brightness,
         )
     else:
         # Texture: food (kibble) creates dense edges; an empty bowl is smooth.
@@ -253,6 +260,7 @@ def _cluster_mask(
     min_texture=CLUSTER_MIN_TEXTURE,
     brightness_target=CLUSTER_BRIGHTNESS_TARGET,
     anchor_bottom=CLUSTER_ANCHOR_BOTTOM,
+    max_brightness=CLUSTER_MAX_BRIGHTNESS,
 ):
     """Mask the food blob via color clustering gated by minimum granularity.
 
@@ -273,6 +281,11 @@ def _cluster_mask(
     discarded unless it rests on the bottom edge of the ROI and does not touch
     the top edge. A food pile sits at the bowl bottom, whereas shadows or wall
     reflections usually hang from the top.
+
+    ``max_brightness`` (0..1) is an absolute cap on a blob's mean brightness: any
+    blob brighter than it is rejected outright, which drops dim-but-not-dark
+    patches when the food (or bowl shadow) is the darkest region. 1.0 disables
+    the cap.
     """
     k = max(2, int(cluster_k))
     # Blur first so kibble texture/noise does not fragment the color groups.
@@ -343,6 +356,11 @@ def _cluster_mask(
             if texture < effective_min_texture:
                 continue
             mean_brightness = float(gray[blob].mean()) / 255.0
+            # Absolute brightness cap: drop blobs brighter than the allowed
+            # maximum (e.g. dim patches that are not as dark as the bowl
+            # shadow). 1.0 disables the gate.
+            if max_brightness < 1.0 and mean_brightness > max_brightness:
+                continue
             # Reject blobs that are not actually on the preferred side of the
             # scene by ``tone_margin``. Skipped at the neutral midpoint.
             if want_bright:
@@ -380,6 +398,7 @@ def compute_coverage(
     brightness_max_smoothness=BRIGHTNESS_MAX_SMOOTHNESS,
     cluster_brightness_target=CLUSTER_BRIGHTNESS_TARGET,
     cluster_anchor_bottom=CLUSTER_ANCHOR_BOTTOM,
+    cluster_max_brightness=CLUSTER_MAX_BRIGHTNESS,
 ):
     """Return the fraction of food pixels in the cropped region."""
     mask = compute_mask(
@@ -395,6 +414,7 @@ def compute_coverage(
         brightness_max_smoothness,
         cluster_brightness_target,
         cluster_anchor_bottom,
+        cluster_max_brightness,
     )
     food_pixels = int(np.count_nonzero(mask))
     total_pixels = mask.size
@@ -455,13 +475,14 @@ def detect_image(
     brightness_max_smoothness=BRIGHTNESS_MAX_SMOOTHNESS,
     cluster_brightness_target=CLUSTER_BRIGHTNESS_TARGET,
     cluster_anchor_bottom=CLUSTER_ANCHOR_BOTTOM,
+    cluster_max_brightness=CLUSTER_MAX_BRIGHTNESS,
 ):
     """Run the detection pipeline on a decoded image (BGR numpy array)."""
     crop = crop_roi(image, roi)
     raw_coverage = compute_coverage(
         crop, threshold, min_artifact_area, method, dilate, cluster_k, cluster_min_texture,
         brightness_min_contrast, fill_holes_area, brightness_max_smoothness,
-        cluster_brightness_target, cluster_anchor_bottom,
+        cluster_brightness_target, cluster_anchor_bottom, cluster_max_brightness,
     )
     coverage = normalize_coverage(raw_coverage, minimum_coverage, full_coverage)
     return {
@@ -487,6 +508,7 @@ def detect(
     brightness_max_smoothness=BRIGHTNESS_MAX_SMOOTHNESS,
     cluster_brightness_target=CLUSTER_BRIGHTNESS_TARGET,
     cluster_anchor_bottom=CLUSTER_ANCHOR_BOTTOM,
+    cluster_max_brightness=CLUSTER_MAX_BRIGHTNESS,
 ):
     """Run the full detection pipeline and return the result dictionary."""
     image = load_image(path)
@@ -506,6 +528,7 @@ def detect(
         brightness_max_smoothness,
         cluster_brightness_target,
         cluster_anchor_bottom,
+        cluster_max_brightness,
     )
 
 
