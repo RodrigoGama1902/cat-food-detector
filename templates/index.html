@@ -154,6 +154,16 @@
       <input type="range" id="clustertex" min="0" max="0.5" step="0.01" value="0.08" />
       <span class="val" id="clustertexVal">0.08</span>
     </div>
+    <div class="slider-row" id="brightContrastRow">
+      <label style="margin:0;width:140px;">Min. contrast</label>
+      <input type="range" id="brightcontrast" min="0" max="128" value="40" />
+      <span class="val" id="brightcontrastVal">40</span>
+    </div>
+    <div class="slider-row" id="fillHolesRow">
+      <label style="margin:0;width:140px;">Fill gaps (px)</label>
+      <input type="range" id="fillholes" min="0" max="25" value="0" />
+      <span class="val" id="fillholesVal">0</span>
+    </div>
     <div class="slider-row" id="dilateRow">
       <label style="margin:0;width:140px;">Dilate (fill)</label>
       <input type="range" id="dilate" min="0" max="6" value="1" />
@@ -274,6 +284,12 @@
       const tex = p.cluster_min_texture != null ? p.cluster_min_texture : 0.08;
       $("clustertex").value = tex;
       $("clustertexVal").textContent = tex;
+      const contrast = p.brightness_min_contrast != null ? p.brightness_min_contrast : 40;
+      $("brightcontrast").value = contrast;
+      $("brightcontrastVal").textContent = contrast;
+      const holes = p.fill_holes != null ? p.fill_holes : 0;
+      $("fillholes").value = holes;
+      $("fillholesVal").textContent = holes;
       applyMethodUI();
     }
 
@@ -319,10 +335,12 @@
       const method = $("method").value;
       const isTexture = method === "texture";
       const isCluster = method === "cluster";
-      $("thrLabel").textContent = isTexture ? "Edge sensitivity" : "Threshold";
+      const isBrightness = method === "brightness";
+      $("thrLabel").textContent = isTexture ? "Edge sensitivity" : "Dark cut (0-255)";
       $("thrRow").style.display = isCluster ? "none" : "flex";
       $("clusterRow").style.display = isCluster ? "flex" : "none";
       $("clusterTexRow").style.display = isCluster ? "flex" : "none";
+      $("brightContrastRow").style.display = isBrightness ? "flex" : "none";
       // Dilate fills both textured and clustered blobs.
       $("dilateRow").style.display = (isTexture || isCluster) ? "flex" : "none";
     }
@@ -455,6 +473,8 @@
     $("dilate").addEventListener("input", () => { $("dilateVal").textContent = $("dilate").value; refreshPreview(); });
     $("clusterk").addEventListener("input", () => { $("clusterkVal").textContent = $("clusterk").value; refreshPreview(); });
     $("clustertex").addEventListener("input", () => { $("clustertexVal").textContent = $("clustertex").value; refreshPreview(); });
+    $("brightcontrast").addEventListener("input", () => { $("brightcontrastVal").textContent = $("brightcontrast").value; refreshPreview(); });
+    $("fillholes").addEventListener("input", () => { $("fillholesVal").textContent = $("fillholes").value; refreshPreview(); });
     $("method").addEventListener("change", () => { applyMethodUI(); refreshPreview(); });
 
     let previewTimer = null;
@@ -469,9 +489,10 @@
       const f = $("fullcov").value;
       const k = $("clusterk").value;
       const tex = $("clustertex").value;
+      const contrast = $("brightcontrast").value;
       const profile = $("profile").value;
       const res = await fetch(
-        `/api/calibrate/preview?profile=${profile}&threshold=${t}&minimum_coverage=${m}&full_coverage=${f}&method=${method}&dilate=${d}&cluster_k=${k}&cluster_min_texture=${tex}`
+        `/api/calibrate/preview?profile=${profile}&threshold=${t}&minimum_coverage=${m}&full_coverage=${f}&method=${method}&dilate=${d}&cluster_k=${k}&cluster_min_texture=${tex}&brightness_min_contrast=${contrast}&fill_holes=${$("fillholes").value}`
       );
       const data = await res.json();
       renderCards(data.results);
@@ -513,6 +534,8 @@
           dilate: parseInt($("dilate").value, 10),
           cluster_k: parseInt($("clusterk").value, 10),
           cluster_min_texture: parseFloat($("clustertex").value),
+          brightness_min_contrast: parseInt($("brightcontrast").value, 10),
+          fill_holes: parseInt($("fillholes").value, 10),
         }),
       });
       const data = await res.json();

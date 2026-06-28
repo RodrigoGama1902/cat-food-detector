@@ -57,6 +57,15 @@ CLUSTER_K = DEFAULTS.get("cluster_k", 4)
 # "cluster" method. A smooth bowl bottom has almost no edges and is rejected;
 # the granular kibble pile passes. Set to 0 to accept any blob.
 CLUSTER_MIN_TEXTURE = _DAY.get("cluster_min_texture", 0.08)
+
+# Brightness method: minimum spread (0..255) between the bowl's darkest and
+# brightest zones for it to count as food. Below this the bowl is treated as
+# empty (a clean bowl is almost uniformly bright).
+BRIGHTNESS_MIN_CONTRAST = _DAY.get("brightness_min_contrast", 40)
+
+# Close black gaps between food chunks up to this many pixels wide (a
+# morphological closing). 0 disables it.
+FILL_HOLES = _DAY.get("fill_holes", 0)
 # -----------------------------------------------------------------------------
 
 
@@ -89,13 +98,15 @@ def compute_mask(
     dilate=DILATE,
     cluster_k=CLUSTER_K,
     cluster_min_texture=CLUSTER_MIN_TEXTURE,
+    brightness_min_contrast=BRIGHTNESS_MIN_CONTRAST,
+    fill_holes_area=FILL_HOLES,
 ):
     """Return the binary food mask for the cropped region."""
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
 
     if method == "brightness":
-        # Dark pixels (below threshold) are treated as food.
-        _, mask = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)
+        # Dark pixels are food, but only if the bowl shows enough contrast.
+        mask = _brightness_mask(gray, threshold, brightness_min_contrast)
     elif method == "cluster":
         # Food forms one large homogeneous color/texture blob; isolate it.
         mask = _cluster_mask(crop, cluster_k, dilate, cluster_min_texture)
@@ -105,6 +116,35 @@ def compute_mask(
 
     if min_artifact_area > 0:
         mask = remove_small_artifacts(mask, min_artifact_area)
+    if fill_holes_area > 0:
+        mask = fill_holes(mask, fill_holes_area)
+    return mask
+
+
+def _brightness_mask(gray, threshold, min_contrast):
+    """Mask the dark food region using a contrast-gated, adaptive threshold.
+
+    The bowl's contrast is the spread between its darkest and brightest zones,
+    measured with robust 5th/95th percentiles so a few stray pixels do not skew
+    it. When that spread is below ``min_contrast`` the bowl is treated as empty
+    (a clean bowl is almost uniformly bright, so there is little to separate).
+
+    Otherwise the cut point is placed *inside* the measured brightness band, so
+    it self-adjusts to each lighting condition instead of using a fixed grey
+    level: ``threshold`` (0..255) slides the cut between the dark floor and the
+    bright ceiling of that band. Pixels darker than the cut are food, because
+    the food is always the darkest color in the bowl.
+    """
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    dark = float(np.percentile(blurred, 5))
+    bright = float(np.percentile(blurred, 95))
+    contrast = bright - dark
+    if contrast < min_contrast:
+        # Not enough contrast: nothing stands out as food.
+        return np.zeros(gray.shape[:2], dtype=np.uint8)
+    ratio = min(1.0, max(0.0, threshold / 255.0))
+    cut = dark + contrast * ratio
+    _, mask = cv2.threshold(gray, cut, 255, cv2.THRESH_BINARY_INV)
     return mask
 
 
@@ -188,6 +228,8 @@ def compute_coverage(
     dilate=DILATE,
     cluster_k=CLUSTER_K,
     cluster_min_texture=CLUSTER_MIN_TEXTURE,
+    brightness_min_contrast=BRIGHTNESS_MIN_CONTRAST,
+    fill_holes_area=FILL_HOLES,
 ):
     """Return the fraction of food pixels in the cropped region."""
     mask = compute_mask(
@@ -198,6 +240,8 @@ def compute_coverage(
         dilate,
         cluster_k,
         cluster_min_texture,
+        brightness_min_contrast,
+        fill_holes_area,
     )
     food_pixels = int(np.count_nonzero(mask))
     total_pixels = mask.size
@@ -215,6 +259,23 @@ def remove_small_artifacts(mask, min_area):
         if stats[label, cv2.CC_STAT_AREA] >= min_area:
             cleaned[labels == label] = 255
     return cleaned
+
+
+def fill_holes(mask, gap):
+    """Close black gaps between food chunks up to ``gap`` pixels wide.
+
+    Uses a morphological closing (dilate then erode) with a circular kernel of
+    diameter ``gap``. This bridges black gaps *between* nearby white chunks and
+    fills small enclosed holes alike — unlike an enclosed-hole fill, it does not
+    care whether the gap connects to the outer background through thin channels.
+    Larger gaps survive because the kernel cannot span them.
+    """
+    if gap <= 0:
+        return mask
+    # Kernel diameter ~= the widest gap to bridge; keep it odd and >= 3.
+    size = max(3, int(gap))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
+    return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
 
 def normalize_coverage(raw, minimum_coverage, full_coverage):
@@ -236,11 +297,14 @@ def detect_image(
     full_coverage=FULL_COVERAGE,
     cluster_k=CLUSTER_K,
     cluster_min_texture=CLUSTER_MIN_TEXTURE,
+    brightness_min_contrast=BRIGHTNESS_MIN_CONTRAST,
+    fill_holes_area=FILL_HOLES,
 ):
     """Run the detection pipeline on a decoded image (BGR numpy array)."""
     crop = crop_roi(image, roi)
     raw_coverage = compute_coverage(
-        crop, threshold, min_artifact_area, method, dilate, cluster_k, cluster_min_texture
+        crop, threshold, min_artifact_area, method, dilate, cluster_k, cluster_min_texture,
+        brightness_min_contrast, fill_holes_area,
     )
     coverage = normalize_coverage(raw_coverage, minimum_coverage, full_coverage)
     return {
@@ -261,6 +325,8 @@ def detect(
     full_coverage=FULL_COVERAGE,
     cluster_k=CLUSTER_K,
     cluster_min_texture=CLUSTER_MIN_TEXTURE,
+    brightness_min_contrast=BRIGHTNESS_MIN_CONTRAST,
+    fill_holes_area=FILL_HOLES,
 ):
     """Run the full detection pipeline and return the result dictionary."""
     image = load_image(path)
@@ -275,6 +341,8 @@ def detect(
         full_coverage,
         cluster_k,
         cluster_min_texture,
+        brightness_min_contrast,
+        fill_holes_area,
     )
 
 
@@ -320,6 +388,18 @@ def main(argv=None):
         help="Minimum granularity (edge density 0..1) for a cluster blob.",
     )
     parser.add_argument(
+        "--brightness-min-contrast",
+        type=int,
+        default=BRIGHTNESS_MIN_CONTRAST,
+        help="Brightness: minimum dark/bright spread (0..255) to count as food.",
+    )
+    parser.add_argument(
+        "--fill-holes",
+        type=int,
+        default=FILL_HOLES,
+        help="Close black gaps between food chunks up to this many px; 0 disables.",
+    )
+    parser.add_argument(
         "--minimum-coverage",
         type=float,
         default=MINIMUM_COVERAGE,
@@ -351,6 +431,8 @@ def main(argv=None):
             full_coverage=args.full_coverage,
             cluster_k=args.cluster_k,
             cluster_min_texture=args.cluster_min_texture,
+            brightness_min_contrast=args.brightness_min_contrast,
+            fill_holes_area=args.fill_holes,
         )
     except (FileNotFoundError, ValueError) as error:
         print(json.dumps({"error": str(error)}), file=sys.stderr)

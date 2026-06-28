@@ -18,6 +18,13 @@ PROFILE_DEFAULTS = {
     "dilate": 1,
     "cluster_k": 4,
     "cluster_min_texture": 0.08,
+    # Brightness method: minimum spread (0..255) between the bowl's darkest and
+    # brightest zones for it to count as containing food. Below this the bowl
+    # is treated as empty (a clean bowl is almost uniformly bright).
+    "brightness_min_contrast": 40,
+    # Close black gaps between food chunks up to this many pixels wide (a
+    # morphological closing). 0 disables it.
+    "fill_holes": 0,
     "minimum_coverage": 0.45,
     "full_coverage": 0.62,
 }
@@ -49,6 +56,8 @@ def _migrate(raw):
             "dilate",
             "cluster_k",
             "cluster_min_texture",
+            "brightness_min_contrast",
+            "fill_holes",
             "minimum_coverage",
             "full_coverage",
         )
