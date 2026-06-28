@@ -200,10 +200,11 @@ def get_config():
 
 @app.post("/api/config")
 def update_config():
-    """Persist a full config edited from the header text field.
+    """Persist a full config (e.g. an imported preset).
 
-    Accepts {"roi": [...], "profiles": {"day": {...}, "night": {...}}}; any
-    omitted keys keep their saved values. Creates the config file if absent.
+    Accepts {"roi": [...], "min_artifact_area": N, "profiles": {"day": {...},
+    "night": {...}}}; any omitted keys keep their saved values. Creates the
+    config file if absent.
     """
     data = request.get_json(silent=True) or {}
     updates = {}
@@ -219,6 +220,12 @@ def update_config():
         if roi[2] <= 0 or roi[3] <= 0:
             return jsonify({"error": "width and height must be positive"}), 400
         updates["roi"] = roi
+
+    if "min_artifact_area" in data:
+        try:
+            updates["min_artifact_area"] = int(data["min_artifact_area"])
+        except (TypeError, ValueError):
+            return jsonify({"error": "min_artifact_area must be an integer"}), 400
 
     profiles = data.get("profiles") or {}
     clean_profiles = {}

@@ -30,12 +30,7 @@
       gap: 16px;
     }
     header h1 { font-size: 18px; margin: 0; white-space: nowrap; }
-    header .cfg-edit { display: flex; gap: 8px; flex: 1; align-items: center; }
-    header input.cfg {
-      flex: 1; min-width: 0; color: var(--text); font-size: 13px; font-family: monospace;
-      background: #11141a; border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px;
-    }
-    header input.cfg:focus { outline: none; border-color: var(--accent); }
+    header .cfg-edit { display: flex; gap: 8px; flex: 1; align-items: center; justify-content: flex-end; }
     header .cfg-edit button { margin: 0; padding: 7px 14px; }
     .tabs { display: flex; gap: 8px; padding: 16px 24px 0; }
     .tab {
@@ -89,9 +84,9 @@
   <header>
     <h1>🐱 Cat Food Detector</h1>
     <div class="cfg-edit">
-      <input type="text" class="cfg" id="cfg" spellcheck="false"
-        placeholder="roi=[x, y, w, h] day[texture thr=43 cov=0.17→0.42] night[cluster k=4 tex=0.08 bright=0.5 anchor cov=0.08→0.22]" />
-      <button class="secondary" id="cfgApply">Apply</button>
+      <button class="secondary" id="cfgExport">Export config</button>
+      <button class="secondary" id="cfgImport">Import config</button>
+      <input type="file" id="cfgFile" accept="application/json,.json" style="display:none;" />
     </div>
   </header>
 
@@ -221,79 +216,6 @@
       setTimeout(() => t.classList.remove("show"), 1800);
     }
 
-    function profileBlock(p) {
-      // Cluster profiles show k= plus their granularity/brightness/anchor
-      // extras; brightness/texture show thr=.
-      let param;
-      if (p.method === "cluster") {
-        const parts = [`k=${p.cluster_k != null ? p.cluster_k : 4}`];
-        parts.push(`tex=${p.cluster_min_texture != null ? p.cluster_min_texture : 0.08}`);
-        parts.push(`bright=${p.cluster_brightness_target != null ? p.cluster_brightness_target : 0.5}`);
-        if (p.cluster_anchor_bottom) parts.push("anchor");
-        param = parts.join(" ");
-      } else {
-        param = `thr=${p.threshold}`;
-        if (p.cluster_anchor_bottom) param += " anchor";
-      }
-      return `${p.method} ${param} cov=${p.minimum_coverage}→${p.full_coverage}`;
-    }
-
-    function showConfig() {
-      const d = config.profiles.day, n = config.profiles.night;
-      $("cfg").value =
-        `roi=[${config.roi.join(", ")}]  day[${profileBlock(d)}]  night[${profileBlock(n)}]`;
-    }
-
-    function parseProfileBlock(text) {
-      // e.g. "texture thr=43 cov=0.17→0.42" or
-      // "cluster k=4 tex=0.08 bright=0.5 anchor cov=0.17→0.42".
-      const method = text.trim().match(/^([a-z]+)/i);
-      const thr = text.match(/thr=(\d+)/i);
-      const k = text.match(/k=(\d+)/i);
-      const tex = text.match(/tex=([\d.]+)/i);
-      const bright = text.match(/bright=([\d.]+)/i);
-      const anchor = /\banchor\b/i.test(text);
-      const cov = text.match(/cov=([\d.]+)\s*(?:→|->)\s*([\d.]+)/i);
-      if (!method || !cov) return null;
-      const name = method[1].toLowerCase();
-      // Cluster blocks use k=; the others use thr=.
-      if (name === "cluster") {
-        if (!k) return null;
-      } else if (!thr) {
-        return null;
-      }
-      const block = {
-        method: name,
-        minimum_coverage: parseFloat(cov[1]),
-        full_coverage: parseFloat(cov[2]),
-        cluster_anchor_bottom: anchor,
-      };
-      if (thr) block.threshold = parseInt(thr[1], 10);
-      if (k) block.cluster_k = parseInt(k[1], 10);
-      if (tex) block.cluster_min_texture = parseFloat(tex[1]);
-      if (bright) block.cluster_brightness_target = parseFloat(bright[1]);
-      return block;
-    }
-
-    function parseConfigString(str) {
-      const roiM = str.match(/roi=\[([^\]]+)\]/i);
-      const dayM = str.match(/day\[([^\]]+)\]/i);
-      const nightM = str.match(/night\[([^\]]+)\]/i);
-      if (!roiM || !dayM || !nightM) {
-        throw new Error("Format: roi=[x, y, w, h] day[...] night[...]");
-      }
-      const roi = roiM[1].split(",").map((s) => parseInt(s.trim(), 10));
-      if (roi.length !== 4 || roi.some((v) => Number.isNaN(v))) {
-        throw new Error("roi must be 4 integers");
-      }
-      const day = parseProfileBlock(dayM[1]);
-      const night = parseProfileBlock(nightM[1]);
-      if (!day || !night) {
-        throw new Error("Each profile: <method> thr=NN|k=N cov=N.NN→N.NN");
-      }
-      return { roi, profiles: { day, night } };
-    }
-
     function currentProfile() {
       return config.profiles[$("profile").value];
     }
@@ -333,18 +255,41 @@
 
     async function loadConfig() {
       config = await (await fetch("/api/config")).json();
-      showConfig();
       loadProfileIntoSliders();
       roi = config.roi.slice();
       updateRoiReadout();
+      refreshPreview();
     }
 
-    $("cfgApply").addEventListener("click", async () => {
+    // --- Config import / export ---
+    $("cfgExport").addEventListener("click", () => {
+      if (!config) { toast("Config not loaded yet"); return; }
+      const blob = new Blob([JSON.stringify(config, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+      a.href = url;
+      a.download = `cat-food-config-${stamp}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast("Config exported");
+    });
+
+    $("cfgImport").addEventListener("click", () => $("cfgFile").click());
+
+    $("cfgFile").addEventListener("change", async (e) => {
+      const file = e.target.files[0];
+      e.target.value = "";  // allow re-importing the same file
+      if (!file) return;
       let payload;
       try {
-        payload = parseConfigString($("cfg").value);
+        payload = JSON.parse(await file.text());
       } catch (err) {
-        toast(err.message);
+        toast("Invalid JSON file");
+        return;
+      }
+      if (!payload || typeof payload !== "object" || !payload.profiles) {
+        toast("Not a valid config file");
         return;
       }
       const res = await fetch("/api/config", {
@@ -355,18 +300,15 @@
       const data = await res.json();
       if (res.ok) {
         config = data;
-        showConfig();
         loadProfileIntoSliders();
         roi = config.roi.slice();
         updateRoiReadout();
-        toast("Config saved");
+        $("cards").innerHTML = "";
+        refreshPreview();
+        toast("Config imported");
       } else {
-        toast(data.error || "Error");
+        toast(data.error || "Import failed");
       }
-    });
-
-    $("cfg").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); $("cfgApply").click(); }
     });
 
     function applyMethodUI() {
@@ -483,7 +425,7 @@
         body: JSON.stringify({ roi }),
       });
       const data = await res.json();
-      if (res.ok) { config = data; showConfig(); toast("ROI saved"); }
+      if (res.ok) { config = data; toast("ROI saved"); }
       else toast(data.error || "Error");
     });
 
@@ -588,7 +530,7 @@
         }),
       });
       const data = await res.json();
-      if (res.ok) { config = data; showConfig(); toast(`Saved ${$("profile").value} profile`); }
+      if (res.ok) { config = data; toast(`Saved ${$("profile").value} profile`); }
       else toast(data.error || "Error");
     });
 
