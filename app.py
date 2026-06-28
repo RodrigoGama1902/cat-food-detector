@@ -145,6 +145,12 @@ def detect():
             full_coverage=args.get(
                 "full_coverage", profile["full_coverage"], type=float
             ),
+            cluster_k=args.get("cluster_k", profile.get("cluster_k", 4), type=int),
+            cluster_min_texture=args.get(
+                "cluster_min_texture",
+                profile.get("cluster_min_texture", 0.08),
+                type=float,
+            ),
         )
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
@@ -191,7 +197,7 @@ def update_config():
         profile = {}
         try:
             if "method" in raw:
-                if raw["method"] not in ("texture", "brightness"):
+                if raw["method"] not in ("texture", "brightness", "cluster"):
                     return jsonify({"error": f"invalid method: {raw['method']}"}), 400
                 profile["method"] = raw["method"]
             if "threshold" in raw:
@@ -202,6 +208,10 @@ def update_config():
                 profile["full_coverage"] = float(raw["full_coverage"])
             if "dilate" in raw:
                 profile["dilate"] = int(raw["dilate"])
+            if "cluster_k" in raw:
+                profile["cluster_k"] = int(raw["cluster_k"])
+            if "cluster_min_texture" in raw:
+                profile["cluster_min_texture"] = float(raw["cluster_min_texture"])
         except (TypeError, ValueError):
             return jsonify({"error": f"invalid values for profile '{name}'"}), 400
         if profile:
@@ -258,6 +268,10 @@ def calibrate_preview():
     )
     method = request.args.get("method", profile["method"])
     dilate = request.args.get("dilate", profile["dilate"], type=int)
+    cluster_k = request.args.get("cluster_k", profile.get("cluster_k", 4), type=int)
+    cluster_min_texture = request.args.get(
+        "cluster_min_texture", profile.get("cluster_min_texture", 0.08), type=float
+    )
     min_artifact_area = config["min_artifact_area"]
 
     results = {}
@@ -273,7 +287,9 @@ def calibrate_preview():
         except ValueError as error:
             results[slot] = {"error": str(error)}
             continue
-        mask = compute_mask(crop, threshold, min_artifact_area, method, dilate)
+        mask = compute_mask(
+            crop, threshold, min_artifact_area, method, dilate, cluster_k, cluster_min_texture
+        )
         coverage = (
             round(float(np.count_nonzero(mask)) / mask.size, 2) if mask.size else 0.0
         )
@@ -295,6 +311,8 @@ def calibrate_preview():
             "full_coverage": full_coverage,
             "method": method,
             "dilate": dilate,
+            "cluster_k": cluster_k,
+            "cluster_min_texture": cluster_min_texture,
             "results": results,
         }
     )
@@ -311,10 +329,14 @@ def calibrate_save():
         updates["minimum_coverage"] = float(data["minimum_coverage"])
     if "full_coverage" in data:
         updates["full_coverage"] = float(data["full_coverage"])
-    if "method" in data and data["method"] in ("texture", "brightness"):
+    if "method" in data and data["method"] in ("texture", "brightness", "cluster"):
         updates["method"] = data["method"]
     if "dilate" in data:
         updates["dilate"] = int(data["dilate"])
+    if "cluster_k" in data:
+        updates["cluster_k"] = int(data["cluster_k"])
+    if "cluster_min_texture" in data:
+        updates["cluster_min_texture"] = float(data["cluster_min_texture"])
     if not updates:
         return jsonify({"error": "nothing to save"}), 400
     return jsonify(save_profile(profile_name, updates))

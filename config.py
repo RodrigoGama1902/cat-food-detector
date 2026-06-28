@@ -16,6 +16,8 @@ PROFILE_DEFAULTS = {
     "method": "texture",
     "threshold": 60,
     "dilate": 1,
+    "cluster_k": 4,
+    "cluster_min_texture": 0.08,
     "minimum_coverage": 0.45,
     "full_coverage": 0.62,
 }
@@ -41,7 +43,15 @@ def _migrate(raw):
         return raw
     legacy = {
         key: raw[key]
-        for key in ("method", "threshold", "dilate", "minimum_coverage", "full_coverage")
+        for key in (
+            "method",
+            "threshold",
+            "dilate",
+            "cluster_k",
+            "cluster_min_texture",
+            "minimum_coverage",
+            "full_coverage",
+        )
         if key in raw
     }
     profile = dict(PROFILE_DEFAULTS)

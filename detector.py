@@ -42,11 +42,21 @@ FULL_COVERAGE = _DAY["full_coverage"]
 # Set to 0 to disable artifact removal.
 MIN_ARTIFACT_AREA = DEFAULTS["min_artifact_area"]
 
-# Detection method: "texture" (edge density, lighting-robust) or "brightness".
+# Detection method: "texture" (edge density), "brightness", or "cluster"
+# (largest homogeneous color/texture blob).
 METHOD = _DAY["method"]
 
 # Dilation iterations used to fill textured (food) regions in the texture method.
 DILATE = _DAY["dilate"]
+
+# Number of color groups used by the "cluster" method. Pixels are quantized into
+# this many groups (k-means in LAB space); food is the largest contiguous group.
+CLUSTER_K = DEFAULTS.get("cluster_k", 4)
+
+# Minimum granularity (edge density, 0..1) for a blob to count as food in the
+# "cluster" method. A smooth bowl bottom has almost no edges and is rejected;
+# the granular kibble pile passes. Set to 0 to accept any blob.
+CLUSTER_MIN_TEXTURE = _DAY.get("cluster_min_texture", 0.08)
 # -----------------------------------------------------------------------------
 
 
@@ -77,6 +87,8 @@ def compute_mask(
     min_artifact_area=MIN_ARTIFACT_AREA,
     method=METHOD,
     dilate=DILATE,
+    cluster_k=CLUSTER_K,
+    cluster_min_texture=CLUSTER_MIN_TEXTURE,
 ):
     """Return the binary food mask for the cropped region."""
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
@@ -84,6 +96,9 @@ def compute_mask(
     if method == "brightness":
         # Dark pixels (below threshold) are treated as food.
         _, mask = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)
+    elif method == "cluster":
+        # Food forms one large homogeneous color/texture blob; isolate it.
+        mask = _cluster_mask(crop, cluster_k, dilate, cluster_min_texture)
     else:
         # Texture: food (kibble) creates dense edges; an empty bowl is smooth.
         mask = _texture_mask(gray, threshold, dilate)
@@ -105,15 +120,85 @@ def _texture_mask(gray, edge_threshold, dilate):
     return edges
 
 
+def _cluster_mask(crop, cluster_k, dilate, min_texture=CLUSTER_MIN_TEXTURE):
+    """Mask the food blob via color clustering gated by minimum granularity.
+
+    Pixels are quantized into ``cluster_k`` color groups with k-means in LAB
+    space (perceptually closer to how similar colors look). Each group is split
+    into connected components. A blob only qualifies as food if its local edge
+    density (granularity) reaches ``min_texture`` — this rejects the smooth bowl
+    bottom/rim, which has almost no edges, while the granular kibble passes.
+    Among qualifying blobs, the highest ``area * texture`` score wins.
+    """
+    k = max(2, int(cluster_k))
+    # Blur first so kibble texture/noise does not fragment the color groups.
+    blurred = cv2.GaussianBlur(crop, (5, 5), 0)
+    lab = cv2.cvtColor(blurred, cv2.COLOR_BGR2LAB)
+    samples = lab.reshape((-1, 3)).astype(np.float32)
+
+    # k cannot exceed the number of available samples.
+    k = min(k, samples.shape[0])
+    if k < 2:
+        return np.zeros(crop.shape[:2], dtype=np.uint8)
+
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+    _, labels, _ = cv2.kmeans(
+        samples, k, None, criteria, 3, cv2.KMEANS_PP_CENTERS
+    )
+    labels = labels.reshape(crop.shape[:2])
+
+    # Per-pixel texture map: edges from the (unblurred) grayscale image mark the
+    # busy kibble surface. A smooth bowl bottom has almost none.
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 40, 120)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    best_mask = np.zeros(crop.shape[:2], dtype=np.uint8)
+    best_score = 0.0
+    # For each color group, score its contiguous regions and keep the winner,
+    # but only blobs whose granularity clears ``min_texture`` may qualify.
+    for label in range(k):
+        group = np.where(labels == label, 255, 0).astype(np.uint8)
+        group = cv2.morphologyEx(group, cv2.MORPH_CLOSE, kernel)
+        num, comps, stats, _ = cv2.connectedComponentsWithStats(group, connectivity=8)
+        for comp in range(1, num):
+            area = stats[comp, cv2.CC_STAT_AREA]
+            if area == 0:
+                continue
+            blob = comps == comp
+            # Texture density inside the blob (0..1): fraction of edge pixels.
+            texture = float(np.count_nonzero(edges[blob])) / area
+            if texture < min_texture:
+                continue
+            score = area * texture
+            if score > best_score:
+                best_score = score
+                best_mask = np.where(blob, 255, 0).astype(np.uint8)
+
+    if dilate > 0:
+        best_mask = cv2.dilate(best_mask, kernel, iterations=dilate)
+    return best_mask
+
+
 def compute_coverage(
     crop,
     threshold=THRESHOLD,
     min_artifact_area=MIN_ARTIFACT_AREA,
     method=METHOD,
     dilate=DILATE,
+    cluster_k=CLUSTER_K,
+    cluster_min_texture=CLUSTER_MIN_TEXTURE,
 ):
     """Return the fraction of food pixels in the cropped region."""
-    mask = compute_mask(crop, threshold, min_artifact_area, method, dilate)
+    mask = compute_mask(
+        crop,
+        threshold,
+        min_artifact_area,
+        method,
+        dilate,
+        cluster_k,
+        cluster_min_texture,
+    )
     food_pixels = int(np.count_nonzero(mask))
     total_pixels = mask.size
     if total_pixels == 0:
@@ -149,10 +234,14 @@ def detect_image(
     method=METHOD,
     dilate=DILATE,
     full_coverage=FULL_COVERAGE,
+    cluster_k=CLUSTER_K,
+    cluster_min_texture=CLUSTER_MIN_TEXTURE,
 ):
     """Run the detection pipeline on a decoded image (BGR numpy array)."""
     crop = crop_roi(image, roi)
-    raw_coverage = compute_coverage(crop, threshold, min_artifact_area, method, dilate)
+    raw_coverage = compute_coverage(
+        crop, threshold, min_artifact_area, method, dilate, cluster_k, cluster_min_texture
+    )
     coverage = normalize_coverage(raw_coverage, minimum_coverage, full_coverage)
     return {
         "food_present": raw_coverage >= minimum_coverage,
@@ -170,6 +259,8 @@ def detect(
     method=METHOD,
     dilate=DILATE,
     full_coverage=FULL_COVERAGE,
+    cluster_k=CLUSTER_K,
+    cluster_min_texture=CLUSTER_MIN_TEXTURE,
 ):
     """Run the full detection pipeline and return the result dictionary."""
     image = load_image(path)
@@ -182,6 +273,8 @@ def detect(
         method,
         dilate,
         full_coverage,
+        cluster_k,
+        cluster_min_texture,
     )
 
 
@@ -204,15 +297,27 @@ def main(argv=None):
     )
     parser.add_argument(
         "--method",
-        choices=("texture", "brightness"),
+        choices=("texture", "brightness", "cluster"),
         default=METHOD,
-        help="Detection method: texture (lighting-robust) or brightness.",
+        help="Detection method: texture, brightness, or cluster.",
     )
     parser.add_argument(
         "--dilate",
         type=int,
         default=DILATE,
-        help="Dilation iterations for the texture method.",
+        help="Dilation iterations for the texture/cluster methods.",
+    )
+    parser.add_argument(
+        "--cluster-k",
+        type=int,
+        default=CLUSTER_K,
+        help="Number of color groups for the cluster method.",
+    )
+    parser.add_argument(
+        "--cluster-min-texture",
+        type=float,
+        default=CLUSTER_MIN_TEXTURE,
+        help="Minimum granularity (edge density 0..1) for a cluster blob.",
     )
     parser.add_argument(
         "--minimum-coverage",
@@ -244,6 +349,8 @@ def main(argv=None):
             method=args.method,
             dilate=args.dilate,
             full_coverage=args.full_coverage,
+            cluster_k=args.cluster_k,
+            cluster_min_texture=args.cluster_min_texture,
         )
     except (FileNotFoundError, ValueError) as error:
         print(json.dumps({"error": str(error)}), file=sys.stderr)
