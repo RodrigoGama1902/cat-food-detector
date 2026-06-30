@@ -58,10 +58,10 @@ CLUSTER_K = DEFAULTS.get("cluster_k", 4)
 # the granular kibble pile passes. Set to 0 to accept any blob.
 CLUSTER_MIN_TEXTURE = _DAY.get("cluster_min_texture", 0.08)
 
-# Cluster method: brightness preference for the winning blob (0..1). 0.5 is
-# neutral; values below 0.5 bias the score toward darker blobs and values above
-# 0.5 toward brighter ones. Useful when food is the darkest thing in the bowl.
-CLUSTER_BRIGHTNESS_TARGET = _DAY.get("cluster_brightness_target", 0.5)
+# Cluster method: blob selection. "off" keeps the neutral area * texture score;
+# "dark" always picks the darkest qualifying blob and "bright" the brightest,
+# ignoring area/texture for the win decision (gates still apply).
+CLUSTER_TONE_PRIORITY = _DAY.get("cluster_tone_priority", "off")
 
 # Cluster method: when True, only accept blobs that rest on the bottom edge of
 # the ROI and do not touch the top edge (a food pile sits at the bowl bottom; a
@@ -123,9 +123,9 @@ def compute_mask(
     brightness_min_contrast=BRIGHTNESS_MIN_CONTRAST,
     fill_holes_area=FILL_HOLES,
     brightness_max_smoothness=BRIGHTNESS_MAX_SMOOTHNESS,
-    cluster_brightness_target=CLUSTER_BRIGHTNESS_TARGET,
     cluster_anchor_bottom=CLUSTER_ANCHOR_BOTTOM,
     cluster_max_brightness=CLUSTER_MAX_BRIGHTNESS,
+    cluster_tone_priority=CLUSTER_TONE_PRIORITY,
 ):
     """Return the binary food mask for the cropped region."""
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
@@ -143,8 +143,8 @@ def compute_mask(
     elif method == "cluster":
         # Food forms one large homogeneous color/texture blob; isolate it.
         mask = _cluster_mask(
-            crop, cluster_k, dilate, cluster_min_texture, cluster_brightness_target,
-            cluster_anchor_bottom, cluster_max_brightness,
+            crop, cluster_k, dilate, cluster_min_texture,
+            cluster_anchor_bottom, cluster_max_brightness, cluster_tone_priority,
         )
     else:
         # Texture: food (kibble) creates dense edges; an empty bowl is smooth.
@@ -258,9 +258,9 @@ def _cluster_mask(
     cluster_k,
     dilate,
     min_texture=CLUSTER_MIN_TEXTURE,
-    brightness_target=CLUSTER_BRIGHTNESS_TARGET,
     anchor_bottom=CLUSTER_ANCHOR_BOTTOM,
     max_brightness=CLUSTER_MAX_BRIGHTNESS,
+    tone_priority=CLUSTER_TONE_PRIORITY,
 ):
     """Mask the food blob via color clustering gated by minimum granularity.
 
@@ -270,12 +270,12 @@ def _cluster_mask(
     density (granularity) reaches ``min_texture`` — this rejects the smooth bowl
     bottom/rim, which has almost no edges, while the granular kibble passes.
 
-    Among qualifying blobs the highest score wins. The score blends blob area
-    with either its texture or its brightness preference, controlled by
-    ``brightness_target`` (0..1). At 0.5 the score is ``area * texture``
-    (neutral, original behavior). As the target moves toward 0 the score shifts
-    to favor darker blobs (and the texture gate is relaxed so a smooth dark food
-    pile can qualify); toward 1 it favors brighter blobs.
+    ``tone_priority`` controls how the winning blob is chosen among the
+    qualifying ones. With "off" the score is ``area * texture`` (neutral). With
+    "dark" the darkest qualifying blob always wins and with "bright" the
+    brightest, regardless of area or texture (the gates still apply). This is
+    useful when the food is reliably the darkest (or brightest) thing in the
+    bowl.
 
     When ``anchor_bottom`` is True a hard geometric gate is applied: a blob is
     discarded unless it rests on the bottom edge of the ROI and does not touch
@@ -311,29 +311,15 @@ def _cluster_mask(
 
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     best_mask = np.zeros(crop.shape[:2], dtype=np.uint8)
+    tone_priority = (tone_priority or "off").lower()
+    hard_tone = tone_priority in ("dark", "bright")
+    # For "off" we maximize area * texture. For "dark"/"bright" we track the
+    # extreme mean brightness instead, so the win is decided purely by tone.
     best_score = 0.0
-    # How strongly the brightness target overrides texture (0 at the neutral
-    # 0.5 midpoint, 1 at either extreme). At the extremes the texture gate is
-    # relaxed and the score is driven by darkness/brightness, so a smooth dark
-    # food pile can win over a bright textured bowl wall.
-    strength = abs(2.0 * brightness_target - 1.0)
-    want_bright = brightness_target > 0.5
-    effective_min_texture = min_texture * (1.0 - strength)
-    # Damp the area weight as the slider nears an extreme. With a linear area
-    # term a large bright band can still out-score a smaller, much darker pile;
-    # using ``area ** area_pow`` (down to 0.4) keeps bigger blobs preferred while
-    # letting a strong brightness preference decide between comparable blobs.
-    area_pow = 1.0 - 0.6 * strength
-    # Ignore specks so a relaxed texture gate cannot pick tiny dark noise as the
-    # winner (which remove_small_artifacts would later wipe to an empty mask).
+    best_tone = 2.0 if tone_priority == "dark" else -1.0
+    # Ignore specks so noise cannot be picked as the winner (which
+    # remove_small_artifacts would later wipe to an empty mask).
     min_blob_area = max(1, int(0.002 * crop.shape[0] * crop.shape[1]))
-    # Absolute tone gate: when a brightness preference is active, the winning
-    # blob must be meaningfully darker (or brighter) than the scene as a whole,
-    # not merely the least-bright region. The required margin (in 0..1
-    # brightness) scales with ``strength`` so a uniformly lit bowl with no real
-    # dark food yields no blob at all instead of a random dim patch.
-    scene_brightness = float(gray.mean()) / 255.0
-    tone_margin = 0.12 * strength
     crop_h = crop.shape[0]
     for label in range(k):
         group = np.where(labels == label, 255, 0).astype(np.uint8)
@@ -353,7 +339,7 @@ def _cluster_mask(
             blob = comps == comp
             # Texture density inside the blob (0..1): fraction of edge pixels.
             texture = float(np.count_nonzero(edges[blob])) / area
-            if texture < effective_min_texture:
+            if texture < min_texture:
                 continue
             mean_brightness = float(gray[blob].mean()) / 255.0
             # Absolute brightness cap: drop blobs brighter than the allowed
@@ -361,24 +347,22 @@ def _cluster_mask(
             # shadow). 1.0 disables the gate.
             if max_brightness < 1.0 and mean_brightness > max_brightness:
                 continue
-            # Reject blobs that are not actually on the preferred side of the
-            # scene by ``tone_margin``. Skipped at the neutral midpoint.
-            if want_bright:
-                if mean_brightness < scene_brightness + tone_margin:
-                    continue
-            elif mean_brightness > scene_brightness - tone_margin:
-                continue
-            # Brightness preference (0..1): high when the blob matches the
-            # desired tone. Blend it with texture by ``strength`` so that at the
-            # neutral midpoint the score is exactly ``area * texture`` (original
-            # behavior) and at the extremes it is ``area ** area_pow *
-            # brightness_pref``.
-            brightness_pref = mean_brightness if want_bright else (1.0 - mean_brightness)
-            weight = texture * (1.0 - strength) + brightness_pref * strength
-            score = (area ** area_pow) * weight
-            if score > best_score:
-                best_score = score
-                best_mask = np.where(blob, 255, 0).astype(np.uint8)
+            if hard_tone:
+                # The darkest (or brightest) qualifying blob wins outright.
+                if tone_priority == "dark":
+                    if mean_brightness < best_tone:
+                        best_tone = mean_brightness
+                        best_mask = np.where(blob, 255, 0).astype(np.uint8)
+                else:
+                    if mean_brightness > best_tone:
+                        best_tone = mean_brightness
+                        best_mask = np.where(blob, 255, 0).astype(np.uint8)
+            else:
+                # Neutral score: prefer the largest, most textured blob.
+                score = area * texture
+                if score > best_score:
+                    best_score = score
+                    best_mask = np.where(blob, 255, 0).astype(np.uint8)
 
     if dilate > 0:
         best_mask = cv2.dilate(best_mask, kernel, iterations=dilate)
@@ -396,9 +380,10 @@ def compute_coverage(
     brightness_min_contrast=BRIGHTNESS_MIN_CONTRAST,
     fill_holes_area=FILL_HOLES,
     brightness_max_smoothness=BRIGHTNESS_MAX_SMOOTHNESS,
-    cluster_brightness_target=CLUSTER_BRIGHTNESS_TARGET,
     cluster_anchor_bottom=CLUSTER_ANCHOR_BOTTOM,
     cluster_max_brightness=CLUSTER_MAX_BRIGHTNESS,
+    roi_shape="rect",
+    cluster_tone_priority=CLUSTER_TONE_PRIORITY,
 ):
     """Return the fraction of food pixels in the cropped region."""
     mask = compute_mask(
@@ -412,12 +397,19 @@ def compute_coverage(
         brightness_min_contrast,
         fill_holes_area,
         brightness_max_smoothness,
-        cluster_brightness_target,
         cluster_anchor_bottom,
         cluster_max_brightness,
+        cluster_tone_priority,
     )
+    if roi_shape == "ellipse":
+        h, w = mask.shape[:2]
+        shape_mask = np.zeros_like(mask)
+        cv2.ellipse(shape_mask, (w // 2, h // 2), (max(1, w // 2), max(1, h // 2)), 0, 0, 360, 255, -1)
+        mask = cv2.bitwise_and(mask, shape_mask)
+        total_pixels = int(np.count_nonzero(shape_mask))
+    else:
+        total_pixels = mask.size
     food_pixels = int(np.count_nonzero(mask))
-    total_pixels = mask.size
     if total_pixels == 0:
         return 0.0
     return food_pixels / total_pixels
@@ -473,16 +465,18 @@ def detect_image(
     brightness_min_contrast=BRIGHTNESS_MIN_CONTRAST,
     fill_holes_area=FILL_HOLES,
     brightness_max_smoothness=BRIGHTNESS_MAX_SMOOTHNESS,
-    cluster_brightness_target=CLUSTER_BRIGHTNESS_TARGET,
     cluster_anchor_bottom=CLUSTER_ANCHOR_BOTTOM,
     cluster_max_brightness=CLUSTER_MAX_BRIGHTNESS,
+    roi_shape="rect",
+    cluster_tone_priority=CLUSTER_TONE_PRIORITY,
 ):
     """Run the detection pipeline on a decoded image (BGR numpy array)."""
     crop = crop_roi(image, roi)
     raw_coverage = compute_coverage(
         crop, threshold, min_artifact_area, method, dilate, cluster_k, cluster_min_texture,
         brightness_min_contrast, fill_holes_area, brightness_max_smoothness,
-        cluster_brightness_target, cluster_anchor_bottom, cluster_max_brightness,
+        cluster_anchor_bottom, cluster_max_brightness,
+        roi_shape=roi_shape, cluster_tone_priority=cluster_tone_priority,
     )
     coverage = normalize_coverage(raw_coverage, minimum_coverage, full_coverage)
     return {
@@ -506,9 +500,10 @@ def detect(
     brightness_min_contrast=BRIGHTNESS_MIN_CONTRAST,
     fill_holes_area=FILL_HOLES,
     brightness_max_smoothness=BRIGHTNESS_MAX_SMOOTHNESS,
-    cluster_brightness_target=CLUSTER_BRIGHTNESS_TARGET,
     cluster_anchor_bottom=CLUSTER_ANCHOR_BOTTOM,
     cluster_max_brightness=CLUSTER_MAX_BRIGHTNESS,
+    roi_shape="rect",
+    cluster_tone_priority=CLUSTER_TONE_PRIORITY,
 ):
     """Run the full detection pipeline and return the result dictionary."""
     image = load_image(path)
@@ -526,9 +521,10 @@ def detect(
         brightness_min_contrast,
         fill_holes_area,
         brightness_max_smoothness,
-        cluster_brightness_target,
         cluster_anchor_bottom,
         cluster_max_brightness,
+        roi_shape=roi_shape,
+        cluster_tone_priority=cluster_tone_priority,
     )
 
 

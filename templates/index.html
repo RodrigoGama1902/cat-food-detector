@@ -99,8 +99,19 @@
   <!-- ROI TAB -->
   <section class="panel" id="panel-roi">
     <h2>Region of Interest</h2>
-    <p class="hint">Upload a snapshot, drag a rectangle over the bowl, then save. Coordinates are stored in the image's native pixels.</p>
+    <p class="hint">Upload a snapshot, drag a shape over the bowl, then save. Scroll to zoom, drag with the middle/right mouse button to pan, double-click to reset. Coordinates are stored in the image's native pixels.</p>
     <input type="file" id="roiFile" accept="image/*" />
+    <div class="row" style="margin-top:14px;gap:16px;">
+      <label style="margin:0;">Shape:</label>
+      <label style="margin:0;display:inline-flex;align-items:center;gap:6px;color:var(--text);">
+        <input type="radio" name="roiShape" value="rect" checked /> Rectangle
+      </label>
+      <label style="margin:0;display:inline-flex;align-items:center;gap:6px;color:var(--text);">
+        <input type="radio" name="roiShape" value="ellipse" /> Ellipse
+      </label>
+      <span class="hint" id="zoomLabel" style="margin:0;">Zoom: 100%</span>
+      <button class="secondary" id="roiReset" style="margin:0;padding:6px 12px;">Reset view</button>
+    </div>
     <div class="row" style="margin-top:14px;">
       <div class="canvas-wrap"><canvas id="roiCanvas" width="600" height="338"></canvas></div>
     </div>
@@ -149,10 +160,14 @@
       <input type="range" id="clustertex" min="0" max="0.5" step="0.01" value="0.08" />
       <span class="val" id="clustertexVal">0.08</span>
     </div>
-    <div class="slider-row" id="clusterBrightRow">
-      <label style="margin:0;width:140px;">Brightness target</label>
-      <input type="range" id="clusterbright" min="0" max="1" step="0.05" value="0.5" />
-      <span class="val" id="clusterbrightVal">0.5</span>
+    <div class="slider-row" id="clusterToneRow">
+      <label style="margin:0;width:140px;">Tone priority</label>
+      <select id="clustertone" style="flex:1;background:#11141a;color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px;">
+        <option value="off">Off (area &amp; texture)</option>
+        <option value="dark">Darkest blob</option>
+        <option value="bright">Brightest blob</option>
+      </select>
+      <span class="hint" style="flex:1;">Pick the winning blob purely by tone instead of size/texture.</span>
     </div>
     <div class="slider-row" id="clusterMaxBrightRow">
       <label style="margin:0;width:140px;">Max. brightness</label>
@@ -243,9 +258,7 @@
       const tex = p.cluster_min_texture != null ? p.cluster_min_texture : 0.08;
       $("clustertex").value = tex;
       $("clustertexVal").textContent = tex;
-      const bright = p.cluster_brightness_target != null ? p.cluster_brightness_target : 0.5;
-      $("clusterbright").value = bright;
-      $("clusterbrightVal").textContent = bright;
+      $("clustertone").value = p.cluster_tone_priority || "off";
       const maxbright = p.cluster_max_brightness != null ? p.cluster_max_brightness : 1;
       $("clustermaxbright").value = maxbright;
       $("clustermaxbrightVal").textContent = maxbright;
@@ -266,8 +279,15 @@
       config = await (await fetch("/api/config")).json();
       loadProfileIntoSliders();
       roi = config.roi.slice();
+      syncShapeRadio();
       updateRoiReadout();
       refreshPreview();
+    }
+
+    function syncShapeRadio() {
+      const shape = (config && config.roi_shape) || "rect";
+      const el = document.querySelector(`input[name="roiShape"][value="${shape}"]`);
+      if (el) el.checked = true;
     }
 
     // --- Config import / export ---
@@ -311,6 +331,7 @@
         config = data;
         loadProfileIntoSliders();
         roi = config.roi.slice();
+        syncShapeRadio();
         updateRoiReadout();
         $("cards").innerHTML = "";
         refreshPreview();
@@ -329,7 +350,7 @@
       $("thrRow").style.display = isCluster ? "none" : "flex";
       $("clusterRow").style.display = isCluster ? "flex" : "none";
       $("clusterTexRow").style.display = isCluster ? "flex" : "none";
-      $("clusterBrightRow").style.display = isCluster ? "flex" : "none";
+      $("clusterToneRow").style.display = isCluster ? "flex" : "none";
       $("clusterMaxBrightRow").style.display = isCluster ? "flex" : "none";
       $("clusterAnchorRow").style.display = (isCluster || isBrightness) ? "flex" : "none";
       $("brightContrastRow").style.display = isBrightness ? "flex" : "none";
@@ -352,8 +373,30 @@
     // --- ROI tool ---
     const canvas = $("roiCanvas");
     const ctx = canvas.getContext("2d");
-    let img = null, scale = 1, roi = [0, 0, 0, 0];
-    let dragging = false, startX = 0, startY = 0, curRect = null;
+    let img = null, baseScale = 1, roi = [0, 0, 0, 0];
+    let zoom = 1, panX = 0, panY = 0;
+    let dragging = false, panning = false;
+    let startX = 0, startY = 0, panStartX = 0, panStartY = 0, curRect = null;
+
+    function roiShape() {
+      const el = document.querySelector('input[name="roiShape"]:checked');
+      return el ? el.value : "rect";
+    }
+
+    function eff() { return baseScale * zoom; }
+
+    function clampPan() {
+      const cw = canvas.width, ch = canvas.height;
+      const iw = img.naturalWidth * eff(), ih = img.naturalHeight * eff();
+      if (iw <= cw) panX = (cw - iw) / 2;
+      else panX = Math.min(0, Math.max(cw - iw, panX));
+      if (ih <= ch) panY = (ch - ih) / 2;
+      else panY = Math.min(0, Math.max(ch - ih, panY));
+    }
+
+    function updateZoomLabel() {
+      $("zoomLabel").textContent = `Zoom: ${Math.round(zoom * 100)}%`;
+    }
 
     $("roiFile").addEventListener("change", (e) => {
       const file = e.target.files[0];
@@ -363,9 +406,12 @@
         img = new Image();
         img.onload = () => {
           const maxW = 900;
-          scale = Math.min(1, maxW / img.naturalWidth);
-          canvas.width = Math.round(img.naturalWidth * scale);
-          canvas.height = Math.round(img.naturalHeight * scale);
+          baseScale = Math.min(1, maxW / img.naturalWidth);
+          canvas.width = Math.round(img.naturalWidth * baseScale);
+          canvas.height = Math.round(img.naturalHeight * baseScale);
+          zoom = 1; panX = 0; panY = 0;
+          clampPan();
+          updateZoomLabel();
           curRect = null;
           drawCanvas();
           $("roiSave").disabled = true;
@@ -375,17 +421,35 @@
       reader.readAsDataURL(file);
     });
 
+    function drawShape(nrect, stroke, fill) {
+      // nrect is in native image pixels; transform to canvas coords.
+      const x = nrect.x * eff() + panX;
+      const y = nrect.y * eff() + panY;
+      const w = nrect.w * eff();
+      const h = nrect.h * eff();
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = 2;
+      ctx.fillStyle = fill;
+      if (roiShape() === "ellipse") {
+        ctx.beginPath();
+        ctx.ellipse(x + w / 2, y + h / 2, Math.max(1, w / 2), Math.max(1, h / 2), 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      } else {
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeRect(x, y, w, h);
+      }
+    }
+
     function drawCanvas() {
       if (!img) return;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      if (curRect) {
-        ctx.strokeStyle = "#4f9dff";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(curRect.x, curRect.y, curRect.w, curRect.h);
-        ctx.fillStyle = "rgba(79,157,255,0.15)";
-        ctx.fillRect(curRect.x, curRect.y, curRect.w, curRect.h);
-      }
+      ctx.drawImage(
+        img, panX, panY,
+        img.naturalWidth * eff(), img.naturalHeight * eff()
+      );
+      const rect = curRect || (roi[2] > 0 ? { x: roi[0], y: roi[1], w: roi[2], h: roi[3] } : null);
+      if (rect) drawShape(rect, "#4f9dff", "rgba(79,157,255,0.15)");
     }
 
     function canvasPos(e) {
@@ -396,15 +460,34 @@
       };
     }
 
+    function toNative(p) {
+      return { x: (p.x - panX) / eff(), y: (p.y - panY) / eff() };
+    }
+
     canvas.addEventListener("mousedown", (e) => {
       if (!img) return;
+      if (e.button === 1 || e.button === 2) {
+        // Middle / right button: pan.
+        e.preventDefault();
+        panning = true;
+        const p = canvasPos(e);
+        panStartX = p.x - panX; panStartY = p.y - panY;
+        return;
+      }
       dragging = true;
-      const p = canvasPos(e);
+      const p = toNative(canvasPos(e));
       startX = p.x; startY = p.y;
     });
     canvas.addEventListener("mousemove", (e) => {
+      if (panning) {
+        const p = canvasPos(e);
+        panX = p.x - panStartX; panY = p.y - panStartY;
+        clampPan();
+        drawCanvas();
+        return;
+      }
       if (!dragging) return;
-      const p = canvasPos(e);
+      const p = toNative(canvasPos(e));
       curRect = {
         x: Math.min(startX, p.x), y: Math.min(startY, p.y),
         w: Math.abs(p.x - startX), h: Math.abs(p.y - startY),
@@ -412,27 +495,56 @@
       drawCanvas();
     });
     window.addEventListener("mouseup", () => {
+      if (panning) { panning = false; return; }
       if (!dragging) return;
       dragging = false;
       if (curRect && curRect.w > 3 && curRect.h > 3) {
         roi = [
-          Math.round(curRect.x / scale), Math.round(curRect.y / scale),
-          Math.round(curRect.w / scale), Math.round(curRect.h / scale),
+          Math.round(curRect.x), Math.round(curRect.y),
+          Math.round(curRect.w), Math.round(curRect.h),
         ];
+        curRect = null;
         updateRoiReadout();
+        drawCanvas();
         $("roiSave").disabled = false;
       }
     });
+    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    canvas.addEventListener("wheel", (e) => {
+      if (!img) return;
+      e.preventDefault();
+      const p = canvasPos(e);
+      const before = toNative(p);
+      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      zoom = Math.min(8, Math.max(1, zoom * factor));
+      // Keep the point under the cursor fixed while zooming.
+      panX = p.x - before.x * eff();
+      panY = p.y - before.y * eff();
+      clampPan();
+      updateZoomLabel();
+      drawCanvas();
+    }, { passive: false });
+    canvas.addEventListener("dblclick", () => {
+      if (!img) return;
+      zoom = 1; panX = 0; panY = 0; clampPan(); updateZoomLabel(); drawCanvas();
+    });
+    $("roiReset").addEventListener("click", () => {
+      if (!img) return;
+      zoom = 1; panX = 0; panY = 0; clampPan(); updateZoomLabel(); drawCanvas();
+    });
+    document.querySelectorAll('input[name="roiShape"]').forEach((el) => {
+      el.addEventListener("change", () => drawCanvas());
+    });
 
     function updateRoiReadout() {
-      $("roiReadout").textContent = `ROI: x=${roi[0]} y=${roi[1]} w=${roi[2]} h=${roi[3]}`;
+      $("roiReadout").textContent = `ROI: x=${roi[0]} y=${roi[1]} w=${roi[2]} h=${roi[3]} (${roiShape()})`;
     }
 
     $("roiSave").addEventListener("click", async () => {
       const res = await fetch("/api/roi", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ roi }),
+        body: JSON.stringify({ roi, roi_shape: roiShape() }),
       });
       const data = await res.json();
       if (res.ok) { config = data; toast("ROI saved"); }
@@ -466,7 +578,7 @@
     $("dilate").addEventListener("input", () => { $("dilateVal").textContent = $("dilate").value; refreshPreview(); });
     $("clusterk").addEventListener("input", () => { $("clusterkVal").textContent = $("clusterk").value; refreshPreview(); });
     $("clustertex").addEventListener("input", () => { $("clustertexVal").textContent = $("clustertex").value; refreshPreview(); });
-    $("clusterbright").addEventListener("input", () => { $("clusterbrightVal").textContent = $("clusterbright").value; refreshPreview(); });
+    $("clustertone").addEventListener("change", () => { refreshPreview(); });
     $("clustermaxbright").addEventListener("input", () => { $("clustermaxbrightVal").textContent = $("clustermaxbright").value; refreshPreview(); });
     $("clusteranchor").addEventListener("change", () => { refreshPreview(); });
     $("brightcontrast").addEventListener("input", () => { $("brightcontrastVal").textContent = $("brightcontrast").value; refreshPreview(); });
@@ -486,12 +598,12 @@
       const f = $("fullcov").value;
       const k = $("clusterk").value;
       const tex = $("clustertex").value;
-      const bright = $("clusterbright").value;
+      const tone = $("clustertone").value;
       const anchor = $("clusteranchor").checked;
       const contrast = $("brightcontrast").value;
       const profile = $("profile").value;
       const res = await fetch(
-        `/api/calibrate/preview?profile=${profile}&threshold=${t}&minimum_coverage=${m}&full_coverage=${f}&method=${method}&dilate=${d}&cluster_k=${k}&cluster_min_texture=${tex}&cluster_brightness_target=${bright}&cluster_anchor_bottom=${anchor}&cluster_max_brightness=${$("clustermaxbright").value}&brightness_min_contrast=${contrast}&fill_holes=${$("fillholes").value}&brightness_max_smoothness=${$("brightsmooth").value}`
+        `/api/calibrate/preview?profile=${profile}&threshold=${t}&minimum_coverage=${m}&full_coverage=${f}&method=${method}&dilate=${d}&cluster_k=${k}&cluster_min_texture=${tex}&cluster_tone_priority=${tone}&cluster_anchor_bottom=${anchor}&cluster_max_brightness=${$("clustermaxbright").value}&brightness_min_contrast=${contrast}&fill_holes=${$("fillholes").value}&brightness_max_smoothness=${$("brightsmooth").value}`
       );
       const data = await res.json();
       renderCards(data.results);
@@ -533,7 +645,7 @@
           dilate: parseInt($("dilate").value, 10),
           cluster_k: parseInt($("clusterk").value, 10),
           cluster_min_texture: parseFloat($("clustertex").value),
-          cluster_brightness_target: parseFloat($("clusterbright").value),
+          cluster_tone_priority: $("clustertone").value,
           cluster_anchor_bottom: $("clusteranchor").checked,
           cluster_max_brightness: parseFloat($("clustermaxbright").value),
           brightness_min_contrast: parseInt($("brightcontrast").value, 10),

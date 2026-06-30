@@ -158,6 +158,7 @@ def detect():
     night_mode = _is_night(override) if override is not None else auto_night
     profile = get_profile(config, night_mode)
     roi = tuple(config["roi"])
+    roi_shape = config.get("roi_shape", "rect")
 
     try:
         result = detect_image(
@@ -171,12 +172,13 @@ def detect():
             full_coverage=profile["full_coverage"],
             cluster_k=profile.get("cluster_k", 4),
             cluster_min_texture=profile.get("cluster_min_texture", 0.08),
-            cluster_brightness_target=profile.get("cluster_brightness_target", 0.5),
             cluster_anchor_bottom=profile.get("cluster_anchor_bottom", False),
             cluster_max_brightness=profile.get("cluster_max_brightness", 1.0),
             brightness_min_contrast=profile.get("brightness_min_contrast", 40),
             fill_holes_area=profile.get("fill_holes", 0),
             brightness_max_smoothness=profile.get("brightness_max_smoothness", 0.0),
+            roi_shape=roi_shape,
+            cluster_tone_priority=profile.get("cluster_tone_priority", "off"),
         )
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
@@ -227,6 +229,12 @@ def update_config():
             return jsonify({"error": "width and height must be positive"}), 400
         updates["roi"] = roi
 
+    roi_shape = data.get("roi_shape")
+    if roi_shape is not None:
+        if roi_shape not in ("rect", "ellipse"):
+            return jsonify({"error": "roi_shape must be 'rect' or 'ellipse'"}), 400
+        updates["roi_shape"] = roi_shape
+
     if "min_artifact_area" in data:
         try:
             updates["min_artifact_area"] = int(data["min_artifact_area"])
@@ -256,10 +264,10 @@ def update_config():
                 profile["cluster_k"] = int(raw["cluster_k"])
             if "cluster_min_texture" in raw:
                 profile["cluster_min_texture"] = float(raw["cluster_min_texture"])
-            if "cluster_brightness_target" in raw:
-                profile["cluster_brightness_target"] = float(
-                    raw["cluster_brightness_target"]
-                )
+            if "cluster_tone_priority" in raw:
+                if raw["cluster_tone_priority"] not in ("off", "dark", "bright"):
+                    return jsonify({"error": "cluster_tone_priority must be 'off', 'dark' or 'bright'"}), 400
+                profile["cluster_tone_priority"] = raw["cluster_tone_priority"]
             if "cluster_anchor_bottom" in raw:
                 profile["cluster_anchor_bottom"] = bool(raw["cluster_anchor_bottom"])
             if "cluster_max_brightness" in raw:
@@ -296,7 +304,13 @@ def set_roi():
         return jsonify({"error": "roi values must be integers"}), 400
     if roi[2] <= 0 or roi[3] <= 0:
         return jsonify({"error": "width and height must be positive"}), 400
-    return jsonify(save_config({"roi": roi}))
+    updates = {"roi": roi}
+    roi_shape = data.get("roi_shape")
+    if roi_shape is not None:
+        if roi_shape not in ("rect", "ellipse"):
+            return jsonify({"error": "roi_shape must be 'rect' or 'ellipse'"}), 400
+        updates["roi_shape"] = roi_shape
+    return jsonify(save_config(updates))
 
 
 @app.post("/api/calibrate/upload")
@@ -332,10 +346,8 @@ def calibrate_preview():
     cluster_min_texture = request.args.get(
         "cluster_min_texture", profile.get("cluster_min_texture", 0.08), type=float
     )
-    cluster_brightness_target = request.args.get(
-        "cluster_brightness_target",
-        profile.get("cluster_brightness_target", 0.5),
-        type=float,
+    cluster_tone_priority = request.args.get(
+        "cluster_tone_priority", profile.get("cluster_tone_priority", "off")
     )
     cluster_anchor_bottom = _as_bool(
         request.args.get("cluster_anchor_bottom"),
@@ -358,6 +370,7 @@ def calibrate_preview():
         type=float,
     )
     min_artifact_area = config["min_artifact_area"]
+    roi_shape = config.get("roi_shape", "rect")
 
     results = {}
     for slot in SLOTS:
@@ -375,11 +388,19 @@ def calibrate_preview():
         mask = compute_mask(
             crop, threshold, min_artifact_area, method, dilate, cluster_k,
             cluster_min_texture, brightness_min_contrast, fill_holes_area,
-            brightness_max_smoothness, cluster_brightness_target,
-            cluster_anchor_bottom, cluster_max_brightness,
+            brightness_max_smoothness, cluster_anchor_bottom, cluster_max_brightness,
+            cluster_tone_priority,
         )
+        if roi_shape == "ellipse":
+            h, w = mask.shape[:2]
+            shape_mask = np.zeros_like(mask)
+            cv2.ellipse(shape_mask, (w // 2, h // 2), (max(1, w // 2), max(1, h // 2)), 0, 0, 360, 255, -1)
+            mask = cv2.bitwise_and(mask, shape_mask)
+            total_pixels = int(np.count_nonzero(shape_mask))
+        else:
+            total_pixels = mask.size
         coverage = (
-            round(float(np.count_nonzero(mask)) / mask.size, 2) if mask.size else 0.0
+            round(float(np.count_nonzero(mask)) / total_pixels, 2) if total_pixels else 0.0
         )
         results[slot] = {
             "coverage": coverage,
@@ -401,7 +422,7 @@ def calibrate_preview():
             "dilate": dilate,
             "cluster_k": cluster_k,
             "cluster_min_texture": cluster_min_texture,
-            "cluster_brightness_target": cluster_brightness_target,
+            "cluster_tone_priority": cluster_tone_priority,
             "cluster_anchor_bottom": cluster_anchor_bottom,
             "cluster_max_brightness": cluster_max_brightness,
             "brightness_min_contrast": brightness_min_contrast,
@@ -431,8 +452,8 @@ def calibrate_save():
         updates["cluster_k"] = int(data["cluster_k"])
     if "cluster_min_texture" in data:
         updates["cluster_min_texture"] = float(data["cluster_min_texture"])
-    if "cluster_brightness_target" in data:
-        updates["cluster_brightness_target"] = float(data["cluster_brightness_target"])
+    if "cluster_tone_priority" in data and data["cluster_tone_priority"] in ("off", "dark", "bright"):
+        updates["cluster_tone_priority"] = data["cluster_tone_priority"]
     if "cluster_anchor_bottom" in data:
         updates["cluster_anchor_bottom"] = bool(data["cluster_anchor_bottom"])
     if "cluster_max_brightness" in data:

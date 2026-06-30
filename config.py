@@ -18,10 +18,10 @@ PROFILE_DEFAULTS = {
     "dilate": 1,
     "cluster_k": 4,
     "cluster_min_texture": 0.08,
-    # Cluster method: brightness preference for the winning blob (0..1). 0.5 is
-    # neutral; below 0.5 biases toward darker blobs, above 0.5 toward brighter
-    # ones (food is often the darkest thing in the bowl).
-    "cluster_brightness_target": 0.5,
+    # Cluster method: blob tone priority. "off" scores blobs by area * texture;
+    # "dark" always picks the darkest qualifying blob and "bright" the brightest
+    # (food is often the darkest thing in the bowl). Gates still apply.
+    "cluster_tone_priority": "off",
     # Cluster method: hard gate that only accepts blobs resting on the bottom
     # edge of the ROI and clear of the top edge. Disabled by default.
     "cluster_anchor_bottom": False,
@@ -47,6 +47,7 @@ PROFILE_DEFAULTS = {
 # Built-in fallback values, used when no config file exists yet.
 DEFAULTS = {
     "roi": [820, 450, 260, 180],
+    "roi_shape": "rect",
     "min_artifact_area": 50,
     "profiles": {
         "day": dict(PROFILE_DEFAULTS),
@@ -71,7 +72,7 @@ def _migrate(raw):
             "dilate",
             "cluster_k",
             "cluster_min_texture",
-            "cluster_brightness_target",
+            "cluster_tone_priority",
             "cluster_anchor_bottom",
             "cluster_max_brightness",
             "brightness_min_contrast",
@@ -86,22 +87,24 @@ def _migrate(raw):
     profile.update(legacy)
     return {
         "roi": raw.get("roi", DEFAULTS["roi"]),
+        "roi_shape": raw.get("roi_shape", DEFAULTS["roi_shape"]),
         "min_artifact_area": raw.get("min_artifact_area", DEFAULTS["min_artifact_area"]),
         "profiles": {"day": dict(profile), "night": dict(profile)},
     }
 
 
-def load_config():
+def load_config(path=None):
     """Return the current config, merging saved values over the defaults."""
     config = copy.deepcopy(DEFAULTS)
-    if os.path.exists(CONFIG_PATH):
+    config_path = path if path is not None else CONFIG_PATH
+    if os.path.exists(config_path):
         try:
-            with open(CONFIG_PATH, encoding="utf-8") as handle:
+            with open(config_path, encoding="utf-8") as handle:
                 raw = _migrate(json.load(handle))
         except (json.JSONDecodeError, OSError):
             raw = {}
         # Merge top-level keys.
-        for key in ("roi", "min_artifact_area"):
+        for key in ("roi", "roi_shape", "min_artifact_area"):
             if key in raw:
                 config[key] = raw[key]
         # Merge each profile over the defaults so missing keys stay sane.
@@ -128,7 +131,7 @@ def _write(config):
 def save_config(updates):
     """Merge top-level updates (e.g. roi) into the saved config."""
     config = load_config()
-    for key in ("roi", "min_artifact_area"):
+    for key in ("roi", "roi_shape", "min_artifact_area"):
         if key in updates:
             config[key] = updates[key]
     return _write(config)
@@ -151,7 +154,7 @@ def apply_config(updates):
     and the config file is created if it does not exist yet.
     """
     config = load_config()
-    for key in ("roi", "min_artifact_area"):
+    for key in ("roi", "roi_shape", "min_artifact_area"):
         if key in updates:
             config[key] = updates[key]
     for name in PROFILE_NAMES:
