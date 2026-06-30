@@ -6,3 +6,5 @@
 *.img
 
 config.json
+
+!default-profile.json
