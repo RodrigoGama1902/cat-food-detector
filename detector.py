@@ -63,6 +63,9 @@ CLUSTER_MIN_TEXTURE = _DAY.get("cluster_min_texture", 0.08)
 # ignoring area/texture for the win decision (gates still apply).
 CLUSTER_TONE_PRIORITY = _DAY.get("cluster_tone_priority", "off")
 
+# Fixed seed for the cluster method's k-means so detection is deterministic.
+_CLUSTER_RNG_SEED = 42
+
 # Cluster method: when True, only accept blobs that rest on the bottom edge of
 # the ROI and do not touch the top edge (a food pile sits at the bowl bottom; a
 # shadow or wall reflection often hangs from the top). Disabled by default.
@@ -145,6 +148,7 @@ def compute_mask(
         mask = _cluster_mask(
             crop, cluster_k, dilate, cluster_min_texture,
             cluster_anchor_bottom, cluster_max_brightness, cluster_tone_priority,
+            min_artifact_area,
         )
     else:
         # Texture: food (kibble) creates dense edges; an empty bowl is smooth.
@@ -261,6 +265,7 @@ def _cluster_mask(
     anchor_bottom=CLUSTER_ANCHOR_BOTTOM,
     max_brightness=CLUSTER_MAX_BRIGHTNESS,
     tone_priority=CLUSTER_TONE_PRIORITY,
+    min_blob_area=1,
 ):
     """Mask the food blob via color clustering gated by minimum granularity.
 
@@ -299,6 +304,10 @@ def _cluster_mask(
         return np.zeros(crop.shape[:2], dtype=np.uint8)
 
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+    # k-means seeds its centers randomly, so the same crop can otherwise yield a
+    # different partition (and a different "darkest" blob) on each run. Seed the
+    # RNG from a fixed value before clustering so detection is reproducible.
+    cv2.setRNGSeed(_CLUSTER_RNG_SEED)
     _, labels, _ = cv2.kmeans(
         samples, k, None, criteria, 3, cv2.KMEANS_PP_CENTERS
     )
@@ -317,9 +326,10 @@ def _cluster_mask(
     # extreme mean brightness instead, so the win is decided purely by tone.
     best_score = 0.0
     best_tone = 2.0 if tone_priority == "dark" else -1.0
-    # Ignore specks so noise cannot be picked as the winner (which
-    # remove_small_artifacts would later wipe to an empty mask).
-    min_blob_area = max(1, int(0.002 * crop.shape[0] * crop.shape[1]))
+    # A candidate blob must be at least as large as the artifact-removal
+    # threshold so the winner cannot be wiped by remove_small_artifacts after
+    # _cluster_mask returns, leaving an all-black mask.
+    min_area = max(min_blob_area, max(1, int(0.002 * crop.shape[0] * crop.shape[1])))
     crop_h = crop.shape[0]
     for label in range(k):
         group = np.where(labels == label, 255, 0).astype(np.uint8)
@@ -327,7 +337,7 @@ def _cluster_mask(
         num, comps, stats, _ = cv2.connectedComponentsWithStats(group, connectivity=8)
         for comp in range(1, num):
             area = stats[comp, cv2.CC_STAT_AREA]
-            if area < min_blob_area:
+            if area < min_area:
                 continue
             if anchor_bottom:
                 # Hard geometric gate: keep only blobs resting on the bottom
